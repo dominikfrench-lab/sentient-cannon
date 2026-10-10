@@ -1,0 +1,1829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Sentient Cannon</title>
+<style>
+  /* Before the game starts (or if the phone can't run JavaScript at all) this
+     is a normal readable page that shows the help text in <div id="help">. */
+  html, body { margin: 0; background: #0b1622; color: #eef3f6; font-family: Arial, Helvetica, sans-serif; }
+  #help { max-width: 640px; margin: 0 auto; padding: 24px 20px 40px; font-size: 18px; line-height: 1.5; }
+  #help h1 { font-size: 28px; margin: 0 0 12px; color: #ffe27a; }
+  #help h2 { font-size: 20px; margin: 22px 0 6px; color: #9fd3ff; }
+  #help ol { padding-left: 24px; margin: 0; }
+  #help .big { font-size: 20px; background: #3a1d12; border: 2px solid #ff9d5c; padding: 12px 14px; }
+  canvas { display: none; position: fixed; left: 0; top: 0; cursor: crosshair; }
+
+  /* The game script adds class="running" to <html> the moment it starts:
+     help text hidden, full-screen game, no scrolling, zooming or text selection. */
+  html.running, html.running body {
+    height: 100%; overflow: hidden; background: #000; touch-action: none; overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: rgba(0,0,0,0); -webkit-text-size-adjust: 100%; }
+  html.running #help { display: none; }
+  html.running canvas { display: block; }
+
+  /* "Turn your phone" hint, shown by the script in portrait on phones */
+  #rotate { display: none; position: fixed; left: 0; right: 0; top: 14px; text-align: center;
+            font: bold 17px Arial, sans-serif; color: #ffe27a; pointer-events: none; }
+  /* Error box: if the game crashes, the error is shown here instead of a black screen */
+  #error { display: none; position: fixed; left: 10px; right: 10px; top: 10px; z-index: 10; padding: 14px;
+           background: #fff; color: #900; font: 15px/1.4 monospace; white-space: pre-wrap;
+           border: 3px solid #c00; max-height: 80%; overflow: auto; }
+</style>
+<script>
+  // SAFETY NET. Written in old-style JavaScript on purpose so even old phones run it.
+  // If anything in the game throws an error, print it on screen instead of
+  // leaving the player staring at a black screen.
+  function showError(text) {
+    var box = document.getElementById('error');
+    if (!box) { alert('Sentient Cannon error: ' + text); return; }
+    if (!box.textContent) box.textContent = 'Sorry, the game hit an error:\n';
+    box.textContent += '\n' + text + '\n';
+    box.style.display = 'block';
+  }
+  window.onerror = function (msg, src, line, col) {
+    showError(msg + (line ? '  (line ' + line + (col ? ':' + col : '') + ')' : ''));
+  };
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    showError('Unhandled promise error: ' + (r && r.message ? r.message : r));
+  });
+</script>
+</head>
+<body>
+<!-- Shown ONLY when JavaScript isn't running (e.g. an email/Files preview).
+     The game script hides it as soon as it starts. -->
+<div id="help">
+  <h1>Sentient Cannon</h1>
+  <p class="big"><b>If you can read this, the game isn't running.</b><br>
+     Your phone opened the file in a preview window that can't run games.
+     Open it in Safari or Chrome instead.</p>
+  <h2>iPhone / iPad</h2>
+  <ol>
+    <li>The Mail, Gmail and Files previews can't run games, and Safari can't open game files saved on the phone.</li>
+    <li>Ask Dominik for the <b>web link</b> to the game and tap it. It opens in Safari and plays right away.</li>
+    <li>Or play it on a computer: save the file and double-click it.</li>
+  </ol>
+  <h2>Android</h2>
+  <ol>
+    <li>Tap the download arrow on the attachment to save it.</li>
+    <li>Open the <b>Files</b> app, go to <b>Downloads</b>, press and hold <b>sentient-cannon.html</b>, then choose <b>Open with &rarr; Chrome</b>.</li>
+    <li>If Chrome isn't offered, open Chrome and type <b>file:///sdcard/Download/sentient-cannon.html</b> in the address bar.</li>
+  </ol>
+  <h2>Computer</h2>
+  <p>Save the file and double-click it. It opens in your web browser. Aim with the mouse and hold the left button to fire.</p>
+</div>
+<div id="rotate">&#8635; Turn your phone sideways for a bigger view</div>
+<div id="error"></div>
+<canvas id="game" width="1280" height="720"></canvas>
+<script>
+'use strict';
+// JavaScript is running, so switch the page from "help text" to "game".
+document.documentElement.className += ' running';
+/* =====================================================================
+   SENTIENT CANNON
+   You are a naval gun bolted to the bow of a US Navy destroyer.
+   You can't move. You can only aim and shoot. Survive the waves.
+
+   The whole game lives in this one file. It is split into sections:
+     1. CONFIG     - all the numbers you might want to tweak
+     2. HELPERS    - tiny math utilities
+     3. ASSETS     - sprites drawn once into hidden canvases (no images needed)
+     4. GAME STATE - one object that holds everything that changes
+     5. ENTITIES   - enemies, bullets, particles and how they update
+     6. WAVES      - which enemies show up, and when
+     7. SHOP       - spending money between waves
+     8. RENDERING  - drawing the world, the ship and the HUD
+     9. INPUT      - mouse, keyboard, touch and fitting the screen
+    10. MAIN LOOP  - ties everything together, 60 times a second
+   ===================================================================== */
+
+/* =====================================================================
+   1. CONFIG
+   ===================================================================== */
+const W = 1280, H = 720;          // the game always "thinks" in 1280x720 pixels
+const HORIZON = 400;              // y position of the horizon line
+const WATERLINE = 612;            // y where the destroyer meets the water
+const SHIP_X = -120;              // screen x of the left edge of the ship sprite
+const TURRET_PIVOT = { x: 648, y: 124 }; // turret pivot, in ship-sprite pixels
+const BARREL_LEN = 64;
+const HULL_MAX = 100;
+const DEBUG = /[?&]debug=1/.test(location.search);
+
+// Ammo types. rate = seconds between shots, dmg = damage per hit.
+// splash = radius (pixels) of the blast that also hurts nearby targets.
+const AMMO = {
+  light:   { key: '1', name: 'LIGHT',   rate: 0.085, speed: 1500, dmg: 1,  spread: 0.025, gravity: 90 },
+  heavy:   { key: '2', name: 'HEAVY',   rate: 0.55,  speed: 1050, dmg: 9,  spread: 0.004, gravity: 220, splash: 95 },
+  missile: { key: '3', name: 'MISSILE', rate: 0.7,   speed: 380,  dmg: 30, spread: 0,     gravity: 0,   splash: 60 }
+};
+const AMMO_ORDER = ['light', 'heavy', 'missile'];
+const START_AMMO = { heavy: 10, missile: 4 };
+
+// Enemy types. T = seconds on the countdown before it hits you.
+// r = hit radius, dmg = hull damage if its timer runs out, reward = money per kill.
+// sprite = which picture to use for the falling wreck.
+const ENEMY = {
+  jet:        { hp: 3,   T: 9.5, r: 36, dmg: 8,  reward: 25, sprite: 'jet' },
+  heli:       { hp: 5,   T: 11,  r: 38, dmg: 6,  reward: 30, sprite: 'heli' },
+  boat:       { hp: 7,   T: 12,  r: 40, dmg: 12, reward: 40, sprite: 'boat' },
+  missile:    { hp: 1,   T: 5,   r: 20, dmg: 10, reward: 15 },
+  fastjet:    { hp: 6,   T: 7,   r: 36, dmg: 10, reward: 50, sprite: 'jetDark' },   // also launches a missile
+  saucer:     { hp: 12,  T: 9,   r: 38, dmg: 14, reward: 80, sprite: 'saucer' },    // aliens! (wave 21+)
+  shell:      { hp: 1,   T: 3.2, r: 15, dmg: 6,  reward: 5 },                       // fired by the boss warship
+  plasma:     { hp: 2,   T: 3.2, r: 17, dmg: 9,  reward: 10 },                      // fired by the mothership
+  warship:    { hp: 120, T: 1,   r: 0,  dmg: 0,  reward: 1500, sprite: 'warship' }, // boss
+  mothership: { hp: 220, T: 1,   r: 0,  dmg: 0,  reward: 3000, sprite: 'mothership' } // alien boss
+};
+
+// Where the helper auto-cannons get bolted on (ship-sprite pixels).
+const CANNON_SPOTS = [{ x: 530, y: 70 }, { x: 322, y: 110 }, { x: 160, y: 100 }];
+
+/* =====================================================================
+   2. HELPERS
+   ===================================================================== */
+const rand  = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp  = (a, b, k) => a + (b - a) * k;
+const pick  = arr => arr[Math.floor(Math.random() * arr.length)];
+// Make a hidden canvas to draw sprites into.
+function makeCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+// Shortest distance from point (px,py) to the line segment (ax,ay)-(bx,by).
+// Used so fast bullets can't "skip over" a target between two frames.
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy || 1;
+  const t = clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0, 1);
+  return Math.hypot(px - (ax + dx * t), py - (ay + dy * t));
+}
+function linGrad(g, x0, y0, x1, y1, stops) {
+  const gr = g.createLinearGradient(x0, y0, x1, y1);
+  stops.forEach(([o, c]) => gr.addColorStop(o, c));
+  return gr;
+}
+function poly(g, pts) { g.beginPath(); g.moveTo(pts[0], pts[1]); for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i], pts[i + 1]); g.closePath(); }
+
+/* =====================================================================
+   3. ASSETS
+   Everything is drawn with code once at startup into hidden canvases.
+   Gradients give the shapes a shaded, metal look so they read as "real".
+   All sprites face LEFT (toward the ship) except the destroyer.
+   ===================================================================== */
+const ASSETS = {};
+
+// ---- Sky: hazy gradient, a soft sun and some blurry clouds ----
+function makeSky() {
+  const c = makeCanvas(W, HORIZON + 20), g = c.getContext('2d');
+  g.fillStyle = linGrad(g, 0, 0, 0, HORIZON, [[0, '#56789a'], [0.55, '#9db3c4'], [0.9, '#d4dbdf'], [1, '#e2e4e2']]);
+  g.fillRect(0, 0, W, c.height);
+  // sun glow
+  const sun = g.createRadialGradient(930, 250, 5, 930, 250, 380);
+  sun.addColorStop(0, 'rgba(255,250,232,0.95)'); sun.addColorStop(0.08, 'rgba(255,240,210,0.55)');
+  sun.addColorStop(0.4, 'rgba(255,230,200,0.12)'); sun.addColorStop(1, 'rgba(255,230,200,0)');
+  g.fillStyle = sun; g.fillRect(0, 0, W, c.height);
+  // clouds: lots of soft, flattened puffs, lit from the top, then blurred.
+  // The blur trick: draw the clouds into a canvas 5x smaller, then stretch it
+  // back up. Smoothing blurs it. (ctx.filter would be simpler, but older
+  // iPhones don't support it.)
+  const CS = 5, cl = makeCanvas(Math.ceil(W / CS), Math.ceil(c.height / CS)), cg2 = cl.getContext('2d');
+  cg2.scale(1 / CS, 1 / CS);
+  for (let k = 0; k < 11; k++) {
+    const cx = rand(-50, W + 50), cy = rand(50, 300), far = cy / 320;
+    for (let i = 0; i < 26; i++) {
+      const x = cx + rand(-150, 150) * (1 - far * 0.5), y = cy + rand(-12, 12), r = rand(14, 40) * (1 - far * 0.55);
+      const cg = cg2.createRadialGradient(x, y - r * 0.5, 1, x, y, r * 1.8);
+      cg.addColorStop(0, 'rgba(255,255,255,0.32)'); cg.addColorStop(1, 'rgba(210,220,228,0)');
+      cg2.fillStyle = cg; cg2.beginPath(); cg2.ellipse(x, y, r * 1.8, r, 0, 0, Math.PI * 2); cg2.fill();
+    }
+  }
+  g.drawImage(cl, 0, 0, W, c.height);
+  // faint distant coastline on the left horizon (smooth hills that taper into the sea)
+  g.fillStyle = 'rgba(112,132,148,0.5)';
+  g.beginPath(); g.moveTo(0, HORIZON);
+  for (let x = 0; x <= 520; x += 4) {
+    const taper = Math.sin(Math.PI * Math.min(1, x / 520) * 0.5 + Math.PI * 0.5);
+    g.lineTo(x, HORIZON - taper * (12 + Math.sin(x * 0.021) * 5 + Math.sin(x * 0.067) * 2.5));
+  }
+  g.lineTo(520, HORIZON); g.closePath(); g.fill();
+  return c;
+}
+
+// ---- Ocean texture: dark-to-light gradient covered in little wave strokes.
+// Strokes get bigger toward the bottom (closer to you) which fakes perspective.
+// The texture wraps left/right so we can scroll it forever.
+function makeOcean() {
+  const h = H - HORIZON, c = makeCanvas(W, h), g = c.getContext('2d');
+  g.fillStyle = linGrad(g, 0, 0, 0, h, [[0, '#7d93a0'], [0.05, '#4d6b7d'], [0.4, '#2c4d61'], [1, '#132d3c']]);
+  g.fillRect(0, 0, W, h);
+  for (let i = 0; i < 7000; i++) {
+    const y = Math.pow(Math.random(), 0.9) * h;
+    const s = 0.12 + (y / h) * 1.3;                 // perspective scale
+    const x = Math.random() * W, len = rand(6, 26) * s * 1.6, th = rand(0.6, 2.2) * s;
+    const light = Math.random() < 0.42;
+    g.fillStyle = light ? `rgba(185,210,222,${rand(0.05, 0.16)})` : `rgba(4,18,28,${rand(0.08, 0.2)})`;
+    for (const ox of [-W, 0, W]) { g.beginPath(); g.ellipse(x + ox, y, len, th, 0, 0, Math.PI * 2); g.fill(); }
+  }
+  return c;
+}
+
+// ---- The destroyer (bow on the RIGHT). Arleigh Burke style, side view. ----
+function makeDestroyer() {
+  const c = makeCanvas(780, 240), g = c.getContext('2d');
+  const WL = 214;                                     // waterline inside the sprite
+  const steel = (y0, y1) => linGrad(g, 0, y0, 0, y1, [[0, '#b9c0c6'], [0.5, '#8d959c'], [1, '#6b737a']]);
+
+  // --- aft hangar / deckhouse
+  poly(g, [86, 158, 88, 110, 236, 104, 248, 156]); g.fillStyle = steel(104, 158); g.fill();
+  // --- aft funnel
+  poly(g, [250, 156, 258, 76, 298, 72, 304, 156]); g.fillStyle = steel(72, 156); g.fill();
+  g.fillStyle = '#26292c'; poly(g, [258, 76, 298, 72, 297, 82, 258, 85]); g.fill();
+  // --- midship block
+  g.fillStyle = steel(116, 156); g.fillRect(300, 116, 124, 40);
+  // --- forward funnel
+  poly(g, [350, 152, 356, 68, 398, 64, 404, 152]); g.fillStyle = steel(64, 152); g.fill();
+  g.fillStyle = '#26292c'; poly(g, [356, 68, 398, 64, 397, 75, 356, 78]); g.fill();
+  // --- mast (tapered, with yardarms and radar)
+  g.fillStyle = linGrad(g, 450, 0, 500, 0, [[0, '#7b838a'], [0.5, '#a9b0b6'], [1, '#6b737a']]);
+  poly(g, [452, 76, 498, 76, 480, 6, 472, 6]); g.fill();
+  g.strokeStyle = '#4c5359'; g.lineWidth = 2;
+  [[430, 28, 520, 28], [440, 46, 510, 46], [458, 14, 494, 14]].forEach(([a, b, d, e]) => { g.beginPath(); g.moveTo(a, b); g.lineTo(d, e); g.stroke(); });
+  g.fillStyle = '#5d646a'; g.fillRect(466, 52, 20, 10);           // radar box
+  g.strokeStyle = '#3a3f44'; g.lineWidth = 1; g.beginPath(); g.moveTo(476, 6); g.lineTo(476, -10); g.stroke();
+  // --- forward superstructure with bridge
+  poly(g, [420, 152, 420, 92, 444, 76, 540, 76, 550, 86, 562, 86, 580, 106, 584, 148]);
+  g.fillStyle = steel(76, 152); g.fill();
+  g.fillStyle = '#1d2329';                                           // bridge windows
+  poly(g, [494, 82, 546, 82, 556, 91, 494, 91]); g.fill();
+  g.fillStyle = 'rgba(160,200,230,0.25)'; g.fillRect(496, 83, 50, 2);
+  // SPY-1 radar panels: big flat octagons (the "face" of a Burke destroyer)
+  function octagon(cx, cy, r) {
+    g.beginPath();
+    for (let i = 0; i < 8; i++) { const a = Math.PI / 8 + i * Math.PI / 4; g.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r); }
+    g.closePath();
+    g.fillStyle = linGrad(g, cx - r, cy - r, cx + r, cy + r, [[0, '#9aa2a8'], [1, '#626a71']]); g.fill();
+    g.strokeStyle = 'rgba(30,35,40,0.6)'; g.lineWidth = 1.5; g.stroke();
+  }
+  octagon(518, 118, 20); octagon(212, 128, 15);
+  // CIWS white domes
+  function ciws(x, y) {
+    g.fillStyle = '#7d858c'; g.fillRect(x - 6, y, 12, 10);
+    g.fillStyle = linGrad(g, x - 9, y - 18, x + 9, y, [[0, '#ffffff'], [1, '#b9bec2']]);
+    g.beginPath(); g.ellipse(x, y - 6, 8, 11, 0, 0, Math.PI * 2); g.fill();
+  }
+  ciws(432, 80); ciws(104, 104);
+  // ship's boat (RHIB) under a davit
+  g.fillStyle = '#e07a2e'; g.beginPath(); g.ellipse(330, 112, 18, 5, 0, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#2b2f33'; g.fillRect(318, 106, 22, 3);
+
+  // --- HULL. The deck rises toward the bow ("sheer") and the bow rakes forward.
+  g.beginPath();
+  g.moveTo(12, 160); g.lineTo(300, 156); g.quadraticCurveTo(600, 150, 764, 128);
+  g.lineTo(718, WL + 6); g.lineTo(28, WL + 6); g.lineTo(12, 200); g.closePath();
+  g.fillStyle = linGrad(g, 0, 128, 0, WL, [[0, '#a7afb6'], [0.22, '#848c93'], [0.7, '#666e75'], [1, '#4c535a']]);
+  g.fill();
+  g.save(); g.clip();                                  // weathering stays inside the hull
+  for (let i = 0; i < 70; i++) {                       // rust/water streaks
+    const x = rand(20, 720), y = rand(150, 175);
+    g.fillStyle = Math.random() < 0.3 ? 'rgba(110,70,40,0.08)' : 'rgba(20,25,30,0.07)';
+    g.fillRect(x, y, rand(1, 3), rand(10, 40));
+  }
+  g.fillStyle = 'rgba(0,0,0,0.12)'; for (let x = 60; x < 700; x += 52) g.fillRect(x, 140, 1, 80); // plate seams
+  g.fillStyle = '#16191c'; g.fillRect(0, WL - 9, 780, 20);                      // black boot-topping
+  g.fillStyle = 'rgba(255,255,255,0.18)';                                       // knuckle highlight
+  g.beginPath(); g.moveTo(480, 168); g.quadraticCurveTo(640, 162, 752, 148); g.lineTo(752, 150); g.quadraticCurveTo(640, 165, 480, 170); g.fill();
+  g.restore();
+  // deck edge highlight + railings
+  g.strokeStyle = 'rgba(230,235,240,0.6)'; g.lineWidth = 1.5;
+  g.beginPath(); g.moveTo(12, 160); g.lineTo(300, 156); g.quadraticCurveTo(600, 150, 764, 128); g.stroke();
+  g.strokeStyle = 'rgba(60,66,72,0.6)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(12, 153); g.lineTo(300, 149); g.quadraticCurveTo(600, 143, 760, 121); g.stroke();
+  // hull number
+  g.font = 'bold 30px Arial, sans-serif'; g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillText('117', 652, 186);
+  g.fillStyle = '#f2f2f0'; g.fillText('117', 650, 184);
+  // anchor + portholes
+  g.fillStyle = '#2a2e32'; g.fillRect(722, 150, 8, 5);
+  for (let x = 380; x < 600; x += 26) { g.beginPath(); g.arc(x, 168, 1.8, 0, Math.PI * 2); g.fill(); }
+  // vertical launch cells on the foredeck
+  g.fillStyle = '#5e666d'; g.fillRect(590, 138, 40, 6);
+  // US flag on the stern staff
+  g.fillStyle = '#3a3f44'; g.fillRect(20, 128, 2, 32);
+  g.fillStyle = '#b22234'; g.fillRect(22, 128, 16, 10);
+  g.fillStyle = '#fff'; for (let i = 1; i < 10; i += 2) g.fillRect(22, 128 + i, 16, 1);
+  g.fillStyle = '#3c3b6e'; g.fillRect(22, 128, 7, 5);
+  return c;
+}
+
+// ---- Fighter jet (faces left). 160x60. tint = paint color family ----
+function makeJet(tint) {
+  const c = makeCanvas(160, 60), g = c.getContext('2d');
+  // three paint jobs: light grey enemy, dark "fast" enemy, and US Navy friendly
+  const paint = tint === 'dark' ? [[0, '#8a9198'], [0.45, '#4f565d'], [1, '#22272c']]
+              : tint === 'navy' ? [[0, '#d3d9de'], [0.45, '#97a2ab'], [1, '#56616b']]
+              :                   [[0, '#c4cad0'], [0.45, '#7b838b'], [1, '#3a4148']];
+  // vertical tail fin
+  poly(g, [110, 25, 130, 2, 146, 2, 143, 25]);
+  g.fillStyle = linGrad(g, 0, 0, 0, 26, paint); g.fill();
+  // far-side wing peeking above the spine
+  poly(g, [70, 26, 104, 18, 116, 18, 102, 27]); g.fillStyle = 'rgba(60,66,72,0.9)'; g.fill();
+  // fuselage
+  g.beginPath();
+  g.moveTo(3, 34); g.quadraticCurveTo(20, 27, 46, 25); g.lineTo(128, 24); g.lineTo(150, 27);
+  g.lineTo(152, 37); g.lineTo(120, 40); g.lineTo(60, 41); g.quadraticCurveTo(24, 41, 3, 34); g.closePath();
+  g.fillStyle = linGrad(g, 0, 24, 0, 42, paint); g.fill();
+  // intake
+  poly(g, [58, 31, 84, 30, 84, 39, 62, 39]); g.fillStyle = '#1e2226'; g.fill();
+  // near-side wing (swept) and tailplane
+  poly(g, [62, 37, 102, 49, 118, 49, 106, 37]); g.fillStyle = linGrad(g, 0, 36, 0, 50, paint); g.fill();
+  poly(g, [126, 33, 158, 41, 142, 35]); g.fill();
+  // canopy: dark glass with a sky reflection
+  g.beginPath(); g.moveTo(28, 27); g.quadraticCurveTo(44, 13, 66, 24); g.closePath();
+  g.fillStyle = linGrad(g, 0, 14, 0, 27, [[0, '#9fc2dc'], [0.4, '#33495c'], [1, '#141c24']]); g.fill();
+  // nozzle
+  g.fillStyle = linGrad(g, 0, 27, 0, 37, [[0, '#55585a'], [0.5, '#2a2c2e'], [1, '#111']]); g.fillRect(146, 27, 8, 10);
+  // panel lines, spine highlight, markings
+  g.strokeStyle = 'rgba(0,0,0,0.25)'; g.lineWidth = 0.8;
+  [40, 70, 95, 120].forEach(x => { g.beginPath(); g.moveTo(x, 25); g.lineTo(x, 40); g.stroke(); });
+  g.strokeStyle = 'rgba(255,255,255,0.35)'; g.beginPath(); g.moveTo(46, 25.5); g.lineTo(128, 24.5); g.stroke();
+  if (tint === 'navy') {            // US star roundel + tail stripe
+    g.fillStyle = '#1f3a6b'; g.beginPath(); g.arc(96, 33, 5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff'; g.fillRect(91, 32, 10, 2);
+    g.fillStyle = '#1f3a6b'; g.fillRect(126, 8, 14, 3);
+  } else {
+    g.fillStyle = '#9c2b23'; g.beginPath(); g.arc(134, 12, 4, 0, Math.PI * 2); g.fill(); // tail marking
+  }
+  return c;
+}
+
+// ---- Attack helicopter (faces left). 180x80. Rotor is drawn live. ----
+function makeHeli() {
+  const c = makeCanvas(180, 80), g = c.getContext('2d');
+  const olive = [[0, '#8a9070'], [0.5, '#555c42'], [1, '#2b2f22']];
+  // tail fin + tail rotor hub
+  poly(g, [158, 40, 168, 12, 177, 12, 174, 44]); g.fillStyle = linGrad(g, 0, 10, 0, 44, olive); g.fill();
+  // body
+  g.beginPath();
+  g.moveTo(18, 46); g.quadraticCurveTo(20, 31, 44, 27); g.lineTo(92, 23); g.quadraticCurveTo(112, 24, 116, 35);
+  g.lineTo(170, 38); g.lineTo(172, 45); g.lineTo(112, 50); g.quadraticCurveTo(70, 62, 34, 57); g.quadraticCurveTo(16, 53, 18, 46);
+  g.closePath(); g.fillStyle = linGrad(g, 0, 23, 0, 60, olive); g.fill();
+  // engine exhaust
+  g.fillStyle = '#23261c'; g.fillRect(100, 27, 14, 6);
+  // tandem cockpit glass
+  g.fillStyle = linGrad(g, 0, 26, 0, 44, [[0, '#a8c6dc'], [0.4, '#30485a'], [1, '#121a22']]);
+  poly(g, [24, 42, 30, 32, 44, 29, 46, 42]); g.fill();
+  poly(g, [50, 41, 50, 28, 70, 26, 72, 40]); g.fill();
+  // stub wing with rocket pod
+  poly(g, [68, 46, 102, 46, 106, 51, 64, 51]); g.fillStyle = '#3d4230'; g.fill();
+  g.fillStyle = linGrad(g, 0, 51, 0, 59, [[0, '#6b705c'], [1, '#2a2c22']]); g.fillRect(72, 51, 26, 8);
+  // chin gun and landing gear
+  g.fillStyle = '#1b1d18'; g.fillRect(14, 54, 14, 3);
+  g.strokeStyle = '#1e211a'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(44, 58); g.lineTo(42, 68); g.moveTo(96, 54); g.lineTo(98, 68); g.moveTo(30, 68); g.lineTo(110, 68); g.stroke();
+  // rotor mast
+  g.fillStyle = '#2a2e22'; g.fillRect(77, 13, 6, 11);
+  // highlight
+  g.strokeStyle = 'rgba(255,255,255,0.25)'; g.lineWidth = 1; g.beginPath(); g.moveTo(44, 28); g.lineTo(92, 24); g.stroke();
+  return c;
+}
+
+// ---- Fast attack boat (faces left). 150x54. Wake is drawn live. ----
+function makeBoat() {
+  const c = makeCanvas(150, 54), g = c.getContext('2d');
+  // cabin
+  poly(g, [58, 29, 65, 14, 104, 13, 113, 29]);
+  g.fillStyle = linGrad(g, 0, 13, 0, 29, [[0, '#c9cdca'], [1, '#737a78']]); g.fill();
+  g.fillStyle = '#1b2228'; poly(g, [67, 16, 103, 15, 105, 21, 66, 22]); g.fill();
+  g.fillStyle = 'rgba(170,200,220,0.3)'; g.fillRect(70, 16, 30, 1.5);
+  // antenna + small flag
+  g.strokeStyle = '#2a2d2f'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(98, 13); g.lineTo(100, 0); g.stroke();
+  g.fillStyle = '#2f7d3a'; g.fillRect(100, 0, 9, 3); g.fillStyle = '#fff'; g.fillRect(100, 3, 9, 2); g.fillStyle = '#b02a2a'; g.fillRect(100, 5, 9, 2);
+  // hull: sharp raised bow on the left
+  poly(g, [2, 25, 146, 29, 144, 43, 24, 43]);
+  g.fillStyle = linGrad(g, 0, 25, 0, 43, [[0, '#e2e4e0'], [0.45, '#8b9290'], [1, '#3c4241']]); g.fill();
+  g.fillStyle = 'rgba(25,30,32,0.75)'; poly(g, [12, 33, 145, 35, 145, 37, 16, 36]); g.fill();
+  // bow gun
+  g.fillStyle = '#25282a'; g.beginPath(); g.arc(30, 24, 4.5, 0, Math.PI * 2); g.fill(); g.fillRect(6, 21, 24, 2.5);
+  // outboard motors
+  g.fillStyle = linGrad(g, 140, 0, 150, 0, [[0, '#3a3e40'], [1, '#141617']]); g.fillRect(140, 22, 9, 22);
+  return c;
+}
+
+// ---- Missile (faces left). 64x16. Used for enemy missiles AND your guided missiles. ----
+function makeMissile() {
+  const c = makeCanvas(64, 16), g = c.getContext('2d');
+  const metal = [[0, '#f6f6f2'], [0.5, '#b9bdbf'], [1, '#6e7376']];
+  poly(g, [48, 5, 57, 0, 61, 0, 58, 5]); g.fillStyle = '#5e6366'; g.fill();          // fins
+  poly(g, [48, 11, 57, 16, 61, 16, 58, 11]); g.fill();
+  g.fillStyle = linGrad(g, 0, 5, 0, 11, metal); g.fillRect(10, 5, 48, 6);            // body
+  g.beginPath(); g.moveTo(10, 5); g.quadraticCurveTo(0, 6, 0, 8); g.quadraticCurveTo(0, 10, 10, 11); g.fill(); // nose
+  g.fillStyle = '#9c2b23'; g.fillRect(18, 5, 2, 6);                                    // warning band
+  g.fillStyle = '#2b2e30'; g.fillRect(58, 6, 4, 4);                                    // nozzle
+  return c;
+}
+
+// ---- Alien saucer. 120x56. Lights are drawn live. ----
+function makeSaucer() {
+  const c = makeCanvas(120, 56), g = c.getContext('2d');
+  g.fillStyle = linGrad(g, 0, 22, 0, 46, [[0, '#e8edf0'], [0.45, '#8f99a2'], [0.55, '#5b636b'], [1, '#2b3036']]);
+  g.beginPath(); g.ellipse(60, 34, 58, 12, 0, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = 'rgba(255,255,255,0.4)'; g.lineWidth = 1; g.beginPath(); g.ellipse(60, 33, 50, 8, 0, Math.PI, Math.PI * 2); g.stroke();
+  g.fillStyle = linGrad(g, 0, 8, 0, 30, [[0, '#d8fbff'], [0.5, '#4aa8b8'], [1, '#14404a']]);
+  g.beginPath(); g.ellipse(60, 28, 22, 18, 0, Math.PI, Math.PI * 2); g.fill();
+  g.fillStyle = 'rgba(255,255,255,0.55)'; g.beginPath(); g.ellipse(52, 18, 6, 3, -0.4, 0, Math.PI * 2); g.fill();
+  return c;
+}
+
+// ---- Boss: enemy cruiser (faces left). 520x180, waterline at y=150. Turrets drawn live. ----
+function makeWarship() {
+  const c = makeCanvas(520, 180), g = c.getContext('2d');
+  const steel = (y0, y1) => linGrad(g, 0, y0, 0, y1, [[0, '#9aa3ab'], [0.5, '#6a737b'], [1, '#474f57']]);
+  poly(g, [178, 104, 180, 62, 336, 58, 342, 104]); g.fillStyle = steel(58, 104); g.fill();      // main block
+  poly(g, [190, 62, 202, 40, 262, 40, 272, 62]); g.fillStyle = steel(40, 62); g.fill();         // bridge
+  g.fillStyle = '#151a1f'; g.fillRect(204, 44, 54, 6);                                          // windows
+  g.fillStyle = steel(0, 40); poly(g, [222, 40, 242, 40, 234, 2, 230, 2]); g.fill();            // mast
+  g.strokeStyle = '#3c434a'; g.lineWidth = 2; g.beginPath(); g.moveTo(208, 14); g.lineTo(256, 14); g.moveTo(214, 26); g.lineTo(250, 26); g.stroke();
+  g.fillStyle = '#58616a'; g.beginPath(); g.ellipse(232, 6, 14, 4, 0, 0, Math.PI * 2); g.fill(); // radar
+  poly(g, [296, 58, 300, 26, 330, 24, 336, 58]); g.fillStyle = steel(24, 58); g.fill();         // funnel
+  g.fillStyle = '#1e2124'; poly(g, [300, 26, 330, 24, 330, 33, 300, 35]); g.fill();
+  poly(g, [360, 106, 362, 78, 428, 76, 438, 106]); g.fillStyle = steel(76, 106); g.fill();      // aft block
+  g.fillStyle = '#3f474e';                                                                       // slanted missile canisters
+  for (let i = 0; i < 4; i++) { g.save(); g.translate(140 + i * 9, 96); g.rotate(-0.35); g.fillRect(0, -16, 7, 16); g.restore(); }
+  // hull
+  poly(g, [6, 90, 300, 104, 516, 106, 512, 158, 44, 158]);
+  g.fillStyle = linGrad(g, 0, 90, 0, 158, [[0, '#8c959d'], [0.3, '#666f77'], [1, '#383f46']]); g.fill();
+  g.save(); g.clip();
+  g.fillStyle = '#121518'; g.fillRect(0, 144, 520, 20);
+  for (let i = 0; i < 50; i++) { g.fillStyle = 'rgba(90,60,40,0.1)'; g.fillRect(rand(20, 500), rand(106, 125), rand(1, 3), rand(8, 30)); }
+  g.restore();
+  g.strokeStyle = 'rgba(220,225,230,0.5)'; g.lineWidth = 1.5; g.beginPath(); g.moveTo(6, 90); g.lineTo(300, 104); g.lineTo(516, 106); g.stroke();
+  g.font = 'bold 22px Arial'; g.fillStyle = '#d9d9d4'; g.fillText('011', 52, 124);
+  return c;
+}
+
+// ---- Boss: alien mothership. 440x150. Glowing ports drawn live. ----
+function makeMothership() {
+  const c = makeCanvas(440, 150), g = c.getContext('2d');
+  g.fillStyle = linGrad(g, 0, 20, 0, 80, [[0, '#cfd6db'], [1, '#59626a']]);
+  g.beginPath(); g.ellipse(220, 74, 120, 52, 0, Math.PI, Math.PI * 2); g.fill();               // upper hull
+  g.fillStyle = linGrad(g, 0, 50, 0, 110, [[0, '#e6ecef'], [0.45, '#8a949c'], [0.55, '#4b535b'], [1, '#1d2126']]);
+  g.beginPath(); g.ellipse(220, 80, 216, 32, 0, 0, Math.PI * 2); g.fill();                     // main disc
+  g.strokeStyle = 'rgba(30,35,40,0.5)'; g.lineWidth = 1.5;
+  for (let r = 60; r < 216; r += 40) { g.beginPath(); g.ellipse(220, 80, r, r * 0.15, 0, 0, Math.PI); g.stroke(); }
+  g.fillStyle = linGrad(g, 0, 5, 0, 40, [[0, '#e0fcff'], [0.6, '#3c97a8'], [1, '#0f343c']]);
+  g.beginPath(); g.ellipse(220, 36, 46, 30, 0, Math.PI, Math.PI * 2); g.fill();                 // command dome
+  return c;
+}
+
+// ---- Soft smoke puff: a fuzzy round blob with a slightly lit top. ----
+// Drawing a ready-made fuzzy sprite is much faster than a gradient per particle.
+function makePuff(r, g2, b) {
+  const c = makeCanvas(64, 64), g = c.getContext('2d');
+  const gr = g.createRadialGradient(28, 26, 2, 32, 32, 32);
+  gr.addColorStop(0, `rgba(${r + 25},${g2 + 25},${b + 25},1)`);
+  gr.addColorStop(0.45, `rgba(${r},${g2},${b},0.75)`);
+  gr.addColorStop(1, `rgba(${r},${g2},${b},0)`);
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  return c;
+}
+
+// A darkened copy of a sprite, used for burning wrecks. Painting 55% black
+// over the sprite's own pixels ('source-atop') looks the same as
+// ctx.filter = 'brightness(0.45)', but works on older phones too.
+const darkCache = {};
+function darkSprite(name) {
+  if (!darkCache[name]) {
+    const src = ASSETS[name], c = makeCanvas(src.width, src.height), g = c.getContext('2d');
+    g.drawImage(src, 0, 0);
+    g.globalCompositeOperation = 'source-atop';
+    g.fillStyle = 'rgba(0,0,0,0.55)'; g.fillRect(0, 0, c.width, c.height);
+    darkCache[name] = c;
+  }
+  return darkCache[name];
+}
+
+/* =====================================================================
+   4. GAME STATE
+   ===================================================================== */
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const game = {
+  mode: 'title',          // 'title' | 'play' | 'shop' | 'gameover'
+  paused: false,
+  time: 0,                // seconds since page load (drives animation)
+  wave: 0,
+  hull: HULL_MAX, hullMax: HULL_MAX,
+  armor: 0,               // each level removes 8% of incoming damage (shop)
+  money: 0, kills: 0,
+  ammoType: 'light',
+  ammo: { light: Infinity, heavy: START_AMMO.heavy, missile: START_AMMO.missile },
+  apLevel: 0,             // armor-piercing upgrade level (shop)
+  cannons: [],            // helper auto-cannons: {aim, cool}
+  cannonLevel: 1,         // fire-rate level shared by all auto-cannons
+  allies: [],             // friendly jets: {x, y, t, phase, dir, cool}
+  bossBoom: null,         // a dying boss keeps exploding for a few seconds
+  shopRects: [],          // clickable areas in the shop (filled in while drawing it)
+  cooldown: 0,            // seconds until the turret can fire again
+  aim: -0.3,              // barrel angle in radians (0 = pointing right)
+  recoil: 0,
+  shake: 0,               // screen shake strength
+  enemies: [], bullets: [], particles: [], texts: [],
+  spawnQueue: [],         // enemies still to appear this wave: {type, at}
+  waveTime: 0,            // seconds since the wave began
+  banner: null,           // big centered text {text, sub, t}
+  waveClearTimer: 0
+};
+
+const input = { x: W * 0.75, y: H * 0.35, down: false };
+
+// Screen / phone info.
+//   touch: true once we know this is a touch screen (switches the help text to "tap")
+//   big:   bigger buttons and text, for phones and other small screens
+//   k:     game pixels -> real canvas pixels (set by resize())
+const ui = {
+  touch: !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches),
+  big: false,
+  k: 1
+};
+
+/* =====================================================================
+   5. ENTITIES
+   ===================================================================== */
+
+// The ship bobs gently on the swell. Every ship-space point goes through this.
+function shipBob() { return Math.sin(game.time * 0.9) * 2.2; }
+function shipToScreen(sx, sy) { return { x: SHIP_X + sx, y: WATERLINE - 214 + sy + shipBob() }; }
+function turretPivot() { return shipToScreen(TURRET_PIVOT.x, TURRET_PIVOT.y); }
+function muzzlePoint() {
+  const p = turretPivot(), L = BARREL_LEN - game.recoil;
+  return { x: p.x + Math.cos(game.aim) * L, y: p.y + Math.sin(game.aim) * L };
+}
+
+// How tough / fast enemies are on a given wave.
+const hpScale    = w => 1 + 0.16 * (w - 1);
+const speedScale = w => 1 + 0.05 * (w - 1);
+
+// ---------- Enemies ----------
+// Each enemy travels along a path from a start point (sx,sy) to an attack
+// point (ex,ey). t counts up; when t reaches T, the enemy attacks the ship.
+function randomShipSpot() { return { x: rand(SHIP_X + 420, SHIP_X + 740), y: WATERLINE - rand(40, 90) }; }
+// Boats look smaller far away (near the horizon) and bigger up close.
+function depthScale(y) { return 0.45 + 0.55 * clamp((y - HORIZON) / (WATERLINE - HORIZON), 0, 1); }
+
+function spawnEnemy(type, opts = {}) {
+  const def = ENEMY[type], w = Math.max(1, game.wave);
+  const e = {
+    type, r: def.r, hp: def.hp * hpScale(w), t: 0, T: def.T / speedScale(w),
+    state: 'attack', x: 0, y: 0, angle: 0, seed: Math.random() * 100, flash: 0, scale: 1, vxs: 0, vys: 0
+  };
+  switch (type) {
+    case 'jet':     e.sx = W + 120; e.sy = rand(80, 280);  e.ex = rand(560, 760);  e.ey = rand(260, 380); break;
+    case 'fastjet': e.sx = W + 120; e.sy = rand(60, 220);  e.ex = rand(480, 700);  e.ey = rand(220, 340); e.fired = false; break;
+    case 'heli':    e.sx = W + 120; e.sy = rand(150, 320); e.ex = rand(760, 1000); e.ey = rand(200, 340); break;
+    case 'boat':    e.sx = W + 100; e.sy = rand(HORIZON + 30, HORIZON + 150); e.ex = SHIP_X + rand(720, 800); e.ey = WATERLINE - 4; break;
+    case 'saucer':  e.sx = W + 100; e.sy = rand(60, 250);  e.ex = rand(700, 1000); e.ey = rand(120, 300); break;
+    case 'missile': case 'shell': case 'plasma': {
+      const hit = randomShipSpot();
+      e.sx = opts.x !== undefined ? opts.x : W + 60; e.sy = opts.y !== undefined ? opts.y : rand(60, 330);
+      e.ex = hit.x; e.ey = hit.y; break;
+    }
+    case 'warship':     // boss ship: sails in and parks on the right. y = its waterline.
+      e.boss = true; e.sx = W + 320; e.sy = HORIZON + 120; e.ex = 1010; e.hw = 235; e.hh = 50; e.hy = -55;
+      e.fireTimer = 2.5; e.turret = 0; break;
+    case 'mothership':  // alien boss: hovers high up and launches saucers
+      e.boss = true; e.sx = W + 300; e.sy = 150; e.ex = 960; e.hw = 200; e.hh = 40; e.hy = 0;
+      e.fireTimer = 2.5; e.spawnTimer = 4; break;
+  }
+  if (opts.T) e.T = opts.T;
+  e.x = e.sx; e.y = e.sy; e.maxHp = e.hp;
+  if (type === 'boat') e.scale = depthScale(e.y);
+  game.enemies.push(e);
+  return e;
+}
+
+// Where an enemy is, given how far through its countdown it is (k = 0..1).
+function enemyPath(e, k) {
+  const t = game.time;
+  switch (e.type) {
+    case 'jet': case 'fastjet':
+      return { x: lerp(e.sx, e.ex, k), y: lerp(e.sy, e.ey, k * k) + Math.sin(t * 1.5 + e.seed) * 8 };
+    case 'heli': {       // flies in over the first 65% of the timer, then hovers
+      const m = Math.min(1, k / 0.65), ease = 1 - (1 - m) * (1 - m);
+      return { x: lerp(e.sx, e.ex, ease), y: lerp(e.sy, e.ey, ease) + Math.sin(t * 2 + e.seed) * 6 };
+    }
+    case 'boat':
+      return { x: lerp(e.sx, e.ex, k), y: lerp(e.sy, e.ey, k) + Math.sin(t * 2.5 + e.seed) * 1.5 };
+    case 'saucer': {     // zig-zags so it's hard to hit
+      const m = Math.min(1, k / 0.6), ease = 1 - (1 - m) * (1 - m);
+      return { x: lerp(e.sx, e.ex, ease) + Math.sin(t * 2.2 + e.seed) * 45, y: lerp(e.sy, e.ey, ease) + Math.sin(t * 3.1 + e.seed) * 35 };
+    }
+    case 'shell':        // lobbed in an arc
+      return { x: lerp(e.sx, e.ex, k), y: lerp(e.sy, e.ey, k) - Math.sin(Math.PI * k) * 90 };
+    default:             // missiles and plasma bolts fly straight at you
+      return { x: lerp(e.sx, e.ex, k), y: lerp(e.sy, e.ey, k) };
+  }
+}
+
+function updateEnemy(e, dt) {
+  e.flash = Math.max(0, e.flash - dt * 6);
+  if (e.boss) { updateBoss(e, dt); return; }
+  if (e.state === 'leaving') {            // already attacked; flying off-screen, can't be hit
+    e.x += e.vx * dt; e.y += e.vy * dt;
+    if (e.x < -250 || e.y < -200 || e.x > W + 250) e.dead = true;
+    if (e.type === 'jet' || e.type === 'fastjet') puff(e.x + 50, e.y + 2, 'exhaust');
+    return;
+  }
+  e.t += dt;
+  const ox = e.x, oy = e.y, k = Math.min(1, e.t / e.T), p = enemyPath(e, k);
+  e.x = p.x; e.y = p.y;
+  e.vxs = (e.x - ox) / dt; e.vys = (e.y - oy) / dt;     // remembered so helpers can "lead" their shots
+  const vx = e.x - ox, vy = e.y - oy;
+  switch (e.type) {
+    case 'jet': case 'fastjet':
+      e.angle = clamp(Math.atan2(vy, -vx || -0.01) * -1, -0.5, 0.5);
+      if (Math.random() < 0.5) puff(e.x + 58, e.y + 2, 'exhaust');
+      // fast jets launch a missile at you halfway through their run
+      if (e.type === 'fastjet' && !e.fired && k > 0.45) {
+        e.fired = true; spawnEnemy('missile', { x: e.x - 10, y: e.y + 14, T: 3.6 / speedScale(game.wave) });
+      }
+      break;
+    case 'heli': e.angle = clamp(vx * 0.05, -0.25, 0.25) * -1 + Math.sin(game.time * 1.3 + e.seed) * 0.03; break;
+    case 'boat':
+      e.scale = depthScale(e.y); e.angle = Math.sin(game.time * 3 + e.seed) * 0.03;
+      if (Math.random() < 0.6) game.particles.push({ type: 'spray', x: e.x + 65 * e.scale, y: e.y + 12 * e.scale, vx: rand(20, 60), vy: rand(-60, -20), life: 0.4, max: 0.4, size: rand(1, 3) * e.scale });
+      break;
+    case 'saucer': e.angle = Math.sin(game.time * 2 + e.seed) * 0.12; break;
+    case 'missile': e.angle = Math.atan2(e.ey - e.sy, e.ex - e.sx) - Math.PI; puff(e.x + 30 * Math.cos(e.angle), e.y + 30 * Math.sin(e.angle), 'trail'); break;
+    case 'shell': e.angle = Math.atan2(vy, vx) - Math.PI; break;
+  }
+  if (e.t >= e.T) enemyAttack(e);
+}
+
+// Bosses don't have a countdown. They park and keep shooting at you.
+function updateBoss(e, dt) {
+  e.t += dt;
+  const k = Math.min(1, e.t / 4), ease = 1 - Math.pow(1 - k, 3), ox = e.x, oy = e.y;
+  e.x = lerp(e.sx, e.ex, ease);
+  if (e.type === 'warship') { e.y = e.sy + Math.sin(game.time * 0.8) * 2; e.angle = Math.sin(game.time * 0.6) * 0.012; }
+  else { e.y = e.sy + Math.sin(game.time * 0.9) * 12; e.angle = Math.sin(game.time * 0.5) * 0.03; }
+  e.vxs = (e.x - ox) / dt; e.vys = (e.y - oy) / dt;
+  if (k < 1) return;                       // still arriving
+  e.fireTimer -= dt;
+  if (e.fireTimer <= 0) {
+    e.fireTimer = Math.max(0.8, 2.4 - (game.wave - 10) * 0.03);
+    if (e.type === 'warship') {            // alternate between front and rear turret
+      const tp = warshipTurret(e, e.turret++ % 2);
+      spawnEnemy('shell', { x: tp.x, y: tp.y });
+      game.particles.push({ type: 'muzzle', x: tp.x, y: tp.y, angle: tp.aim, life: 0.08, max: 0.08, size: 1.5 });
+      puff(tp.x, tp.y, 'gunsmoke'); puff(tp.x, tp.y, 'gunsmoke');
+    } else {
+      spawnEnemy('plasma', { x: e.x + rand(-140, 140), y: e.y + 30 });
+    }
+  }
+  if (e.type === 'mothership' && (e.spawnTimer -= dt) <= 0) {
+    e.spawnTimer = Math.max(3, 6 - (game.wave - 30) * 0.05);
+    const s = spawnEnemy('saucer'); s.sx = s.x = e.x; s.sy = s.y = e.y + 30;
+  }
+}
+
+// World position + aim of the boss warship's two turrets.
+function warshipTurret(e, i) {
+  const spot = i === 0 ? { x: 100, y: 86 } : { x: 470, y: 96 };
+  const x = e.x - 260 + spot.x, y = e.y - 150 + spot.y, pv = turretPivot();
+  return { x, y, aim: Math.atan2(pv.y - y, pv.x - x) };
+}
+
+// The countdown hit zero: the enemy gets its shot off and you take damage.
+function enemyAttack(e) {
+  damageHull(ENEMY[e.type].dmg);
+  if (e.type === 'missile' || e.type === 'boat' || e.type === 'shell' || e.type === 'plasma') {
+    // these slam straight into the ship
+    explosion(e.x, e.y, e.type === 'boat' ? 1.4 : 0.9);
+    e.dead = true;
+    return;
+  }
+  // aircraft fire a quick streak at the ship, then fly away
+  const hit = randomShipSpot();
+  game.particles.push({ type: 'streak', x: e.x, y: e.y, x2: hit.x, y2: hit.y, life: 0.18, max: 0.18, color: e.type === 'saucer' ? '120,255,170' : '255,230,180' });
+  explosion(hit.x, hit.y, 0.8);
+  e.state = 'leaving';
+  if (e.type === 'jet' || e.type === 'fastjet') { e.vx = -700; e.vy = -220; }
+  else if (e.type === 'saucer') { e.vx = 150; e.vy = -420; }
+  else { e.vx = 160; e.vy = -140; }
+}
+
+function damageHull(amount) {
+  const real = amount * (1 - 0.08 * game.armor);
+  game.hull = Math.max(0, game.hull - real);
+  game.shake = Math.max(game.shake, 14);
+  game.hurtFlash = 0.35;
+  if (game.hull <= 0 && game.mode === 'play') gameOver();
+}
+
+function killEnemy(e) {
+  e.dead = true;
+  game.kills++;
+  const def = ENEMY[e.type];
+  game.money += def.reward;
+  floatText('+$' + def.reward, e.x, e.y - 30, '#ffe27a');
+  if (e.boss) {
+    // big finale: keeps exploding for a few seconds, then the wreck goes down
+    game.bossBoom = { x: e.x, y: e.y + e.hy, hw: e.hw, hh: e.hh, t: 2.5 };
+    explosion(e.x, e.y + e.hy, 2.5);
+    game.banner = { text: e.type === 'warship' ? 'CRUISER SUNK' : 'MOTHERSHIP DOWN', sub: '+$' + def.reward, t: 2.5 };
+    game.particles.push({ type: 'wreck', sprite: def.sprite, x: e.x, y: e.type === 'warship' ? e.y - 60 : e.y, vx: 0, vy: e.type === 'warship' ? 14 : 30,
+      angle: e.angle, spin: e.type === 'warship' ? 0.15 : 0.3, life: 7, max: 7, sink: e.type === 'warship', waterY: e.y + 4, big: true });
+    return;
+  }
+  explosion(e.x, e.y, e.type === 'missile' || e.type === 'shell' || e.type === 'plasma' ? 0.6 : e.type === 'heli' ? 1.3 : 1.1);
+  if (!def.sprite) return;
+  if (e.type === 'boat') {   // boats sink where they are
+    game.particles.push({ type: 'wreck', sprite: 'boat', x: e.x, y: e.y, vx: 0, vy: 12, angle: e.angle, spin: 0.6, life: 2.5, max: 2.5, sink: true, waterY: e.y + 14 * e.scale, scale: e.scale });
+  } else {                   // aircraft fall burning into the sea
+    game.particles.push({ type: 'wreck', sprite: def.sprite, x: e.x, y: e.y, vx: rand(-120, 40), vy: rand(-80, 20), angle: e.angle, spin: rand(-2.5, 2.5), life: 6, max: 6 });
+  }
+}
+
+// ---------- Targeting helpers (for auto-cannons, friendly jets, missiles) ----------
+const isTarget = e => !e.dead && e.state !== 'leaving';
+function nearestTarget(x, y, range = Infinity) {
+  let best = null, bd = range;
+  for (const e of game.enemies) {
+    if (!isTarget(e)) continue;
+    const d = Math.hypot(e.x - x, e.y + (e.hy || 0) - y);
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+// Aim where the target WILL be when the bullet arrives ("leading" the shot).
+function leadAim(sx, sy, e, speed) {
+  const ty0 = e.y + (e.hy || 0), d = Math.hypot(e.x - sx, ty0 - sy) / speed;
+  return Math.atan2(ty0 + e.vys * d - sy, e.x + e.vxs * d - sx);
+}
+const dmgMult = () => 1 + 0.5 * game.apLevel;      // armor-piercing upgrade
+
+// ---------- Bullets (all shells and missiles, yours and your helpers') ----------
+function shoot(kind, x, y, ang, speed, dmg, gravity, extra) {
+  const b = { kind, x, y, px: x, py: y, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed, dmg, g: gravity, life: 3 };
+  game.bullets.push(Object.assign(b, extra));
+  return b;
+}
+
+function fire() {
+  if (game.ammo[game.ammoType] <= 0) game.ammoType = 'light';   // out of special ammo
+  const id = game.ammoType, a = AMMO[id];
+  if (id !== 'light') game.ammo[id]--;
+  const m = muzzlePoint(), ang = game.aim + rand(-a.spread, a.spread);
+  const extra = { splash: a.splash || 0 };
+  if (id === 'missile') { extra.target = nearestTarget(input.x, input.y); extra.life = 5; }
+  shoot(id, m.x, m.y, ang, a.speed, a.dmg * dmgMult(), a.gravity, extra);
+  game.cooldown = a.rate;
+  game.recoil = id === 'light' ? 6 : 12;
+  game.shake = Math.max(game.shake, id === 'light' ? 2.5 : 7);
+  // muzzle flash + a little smoke
+  game.particles.push({ type: 'muzzle', x: m.x, y: m.y, angle: ang, life: 0.06, max: 0.06, size: id === 'light' ? 1 : 1.8 });
+  if (Math.random() < (id === 'light' ? 0.5 : 1)) puff(m.x, m.y, 'gunsmoke');
+  if (game.ammo[id] <= 0) game.ammoType = 'light';
+}
+
+// Does this bullet's path this frame touch enemy e?
+// (Checking the whole path means fast bullets can't skip over a target.)
+function bulletHits(e, b) {
+  if (e.hw) {                                    // bosses use a rectangle
+    for (let s = 0; s <= 4; s++) {
+      const x = lerp(b.px, b.x, s / 4), y = lerp(b.py, b.y, s / 4);
+      if (Math.abs(x - e.x) < e.hw && Math.abs(y - (e.y + e.hy)) < e.hh) return true;
+    }
+    return false;
+  }
+  return distToSegment(e.x, e.y, b.px, b.py, b.x, b.y) < e.r * e.scale;
+}
+
+function updateBullet(b, dt) {
+  b.px = b.x; b.py = b.y;
+  if (b.kind === 'missile') steerMissile(b, dt);
+  b.vy += b.g * dt;
+  b.x += b.vx * dt; b.y += b.vy * dt;
+  b.life -= dt;
+  for (const e of game.enemies) {
+    if (!isTarget(e) || !bulletHits(e, b)) continue;
+    hitEnemy(e, b.dmg, b.x, b.y);
+    if (b.splash) blast(b.x, b.y, b.splash, b.dmg * 0.5, e);
+    b.dead = true;
+    return;
+  }
+  if (b.y > H - 40) {                            // hit the sea
+    splash(b.x, H - 40);
+    if (b.splash) blast(b.x, H - 40, b.splash, b.dmg * 0.5, null);
+    b.dead = true;
+  }
+  if (b.x < -80 || b.x > W + 80 || b.y < -400 || b.life <= 0) b.dead = true;
+}
+
+// Guided missiles turn toward their target a little every frame.
+function steerMissile(b, dt) {
+  if (!b.target || !isTarget(b.target)) b.target = nearestTarget(b.x, b.y);
+  let ang = Math.atan2(b.vy, b.vx);
+  const speed = Math.min(1000, Math.hypot(b.vx, b.vy) + 900 * dt);   // accelerates
+  if (b.target) {
+    const want = Math.atan2(b.target.y + (b.target.hy || 0) - b.y, b.target.x - b.x);
+    let diff = want - ang;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    ang += clamp(diff, -6 * dt, 6 * dt);                              // max turn rate
+  }
+  b.vx = Math.cos(ang) * speed; b.vy = Math.sin(ang) * speed;
+  puff(b.x - b.vx * 0.03, b.y - b.vy * 0.03, 'trail');
+}
+
+// Heavy shells and missiles explode and hurt everything nearby.
+function blast(x, y, radius, dmg, skip) {
+  explosion(x, y, radius / 70);
+  for (const e of game.enemies) {
+    if (!isTarget(e) || e === skip) continue;
+    const d = e.hw
+      ? Math.hypot(Math.max(0, Math.abs(x - e.x) - e.hw), Math.max(0, Math.abs(y - (e.y + e.hy)) - e.hh))
+      : Math.hypot(x - e.x, y - e.y) - e.r * e.scale;
+    if (d < radius) hitEnemy(e, dmg, e.hw ? x : e.x, e.hw ? y : e.y);
+  }
+}
+
+function hitEnemy(e, dmg, x, y) {
+  e.hp -= dmg; e.flash = 1;
+  for (let i = 0; i < 5; i++) game.particles.push({ type: 'spark', x, y, vx: rand(-260, 260), vy: rand(-260, 160), life: rand(0.15, 0.35), max: 0.35 });
+  if (e.hp <= 0 && !e.dead) killEnemy(e);
+}
+
+// ---------- Helpers you buy in the shop ----------
+// Auto-cannons: each one picks a different target, most urgent (lowest timer) first.
+function updateCannons(dt) {
+  if (!game.cannons.length) return;
+  const targets = game.enemies.filter(isTarget).sort((a, b) => (a.boss ? 1 : 0) - (b.boss ? 1 : 0) || (b.t / b.T) - (a.t / a.T));
+  const rate = 0.42 / (1 + 0.5 * (game.cannonLevel - 1));
+  game.cannons.forEach((c, i) => {
+    const spot = CANNON_SPOTS[i], p = shipToScreen(spot.x, spot.y);
+    c.cool -= dt;
+    const tgt = targets[i % Math.max(1, targets.length)];
+    if (!tgt) return;
+    c.aim = leadAim(p.x, p.y, tgt, 1400);
+    if (c.cool <= 0 && (game.mode === 'play')) {
+      c.cool = rate;
+      const mx = p.x + Math.cos(c.aim) * 22, my = p.y + Math.sin(c.aim) * 22;
+      shoot('auto', mx, my, c.aim + rand(-0.02, 0.02), 1400, 1 * dmgMult(), 0);
+      game.particles.push({ type: 'muzzle', x: mx, y: my, angle: c.aim, life: 0.05, max: 0.05, size: 0.5 });
+    }
+  });
+}
+
+// Friendly jets fly figure-eights across the sky and shoot whatever is in front of them.
+function updateAllies(dt) {
+  game.allies.forEach((a, i) => {
+    a.t += dt;
+    const nx = 640 + Math.cos(a.t * 0.3 + a.phase) * 620;
+    const ny = 110 + i * 30 + Math.sin(a.t * 0.6 + a.phase) * 55;
+    a.dir = nx >= a.x ? 1 : -1; a.tilt = clamp((ny - a.y) * 0.15, -0.3, 0.3);
+    a.x = nx; a.y = ny;
+    if (Math.random() < 0.5) puff(a.x - a.dir * 58, a.y + 2, 'exhaust');
+    a.cool -= dt;
+    const tgt = nearestTarget(a.x, a.y, 800);
+    if (tgt && a.cool <= 0 && (tgt.x - a.x) * a.dir > 0 && game.mode === 'play') {
+      a.cool = 0.3;
+      shoot('ally', a.x + a.dir * 60, a.y + 4, leadAim(a.x, a.y, tgt, 1300), 1300, 1.2 * dmgMult(), 0);
+    }
+  });
+}
+
+// ---------- Particles: smoke, fire, sparks, debris, wrecks ----------
+function puff(x, y, kind) {
+  if (kind === 'exhaust') game.particles.push({ type: 'smoke', x, y, vx: rand(10, 40), vy: rand(-10, 10), life: 0.7, max: 0.7, size: 3, grow: 14, shade: 200, alpha: 0.18 });
+  else if (kind === 'gunsmoke') game.particles.push({ type: 'smoke', x, y, vx: rand(-20, 20), vy: rand(-40, -10), life: 1.2, max: 1.2, size: 6, grow: 30, shade: 225, alpha: 0.35 });
+  else if (kind === 'trail') game.particles.push({ type: 'smoke', x, y, vx: rand(-8, 8), vy: rand(-12, 4), life: 1.1, max: 1.1, size: 3, grow: 13, shade: 215, alpha: 0.32 });
+  else if (kind === 'black') game.particles.push({ type: 'smoke', x, y, vx: rand(-15, 15) + 12, vy: rand(-50, -25), life: 2, max: 2, size: 7, grow: 28, shade: 40, alpha: 0.42 });
+}
+
+function explosion(x, y, scale) {
+  game.shake = Math.max(game.shake, 6 * scale);
+  game.particles.push({ type: 'flash', x, y, life: 0.12, max: 0.12, size: 90 * scale });
+  for (let i = 0; i < 16 * scale; i++) {
+    const a = Math.random() * Math.PI * 2, s = rand(40, 220) * scale;
+    game.particles.push({ type: 'fire', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: rand(0.3, 0.7), max: 0.7, size: rand(8, 20) * scale });
+  }
+  for (let i = 0; i < 7 * scale; i++) {
+    game.particles.push({ type: 'smoke', x: x + rand(-15, 15), y: y + rand(-15, 15), vx: rand(-40, 40), vy: rand(-60, -10), life: rand(1.0, 2.0), max: 2.0, size: 9 * scale, grow: 32 * scale, shade: rand(30, 140), alpha: 0.5 });
+  }
+  for (let i = 0; i < 8 * scale; i++) {
+    game.particles.push({ type: 'debris', x, y, vx: rand(-300, 300), vy: rand(-350, 50), life: rand(1, 2), max: 2, spin: rand(-12, 12), angle: 0, size: rand(2, 5) });
+  }
+}
+
+function splash(x, y) {
+  for (let i = 0; i < 8; i++) game.particles.push({ type: 'spray', x: x + rand(-6, 6), y, vx: rand(-40, 40), vy: rand(-260, -120), life: rand(0.4, 0.8), max: 0.8, size: rand(2, 4) });
+}
+
+function floatText(text, x, y, color) { game.texts.push({ text, x, y, color, life: 1.1 }); }
+
+function updateParticle(p, dt) {
+  p.life -= dt;
+  if (p.life <= 0) { p.dead = true; return; }
+  if (p.vx !== undefined) { p.x += p.vx * dt; p.y += p.vy * dt; }
+  switch (p.type) {
+    case 'smoke': p.vx *= 0.97; p.vy *= 0.97; p.size += p.grow * dt; break;
+    case 'fire': p.vx *= 0.9; p.vy = p.vy * 0.9 - 30 * dt; break;
+    case 'spark': p.vy += 600 * dt; break;
+    case 'spray': p.vy += 700 * dt; break;
+    case 'debris':
+      p.vy += 500 * dt; p.angle += p.spin * dt;
+      if (Math.random() < 0.08) puff(p.x, p.y, 'black');
+      if (p.y > H - 60) { p.dead = true; splash(p.x, p.y); }
+      break;
+    case 'wreck':
+      if (p.sink) {          // ships slide under the waves
+        p.angle += p.spin * dt * 0.1;
+        if (Math.random() < (p.big ? 0.9 : 0.4)) puff(p.x + rand(-60, 60) * (p.big ? 3 : p.scale || 1), p.y - 10, 'black');
+        break;
+      }
+      p.vy += (p.big ? 60 : 260) * dt; p.angle += p.spin * dt * 0.4;
+      if (Math.random() < 0.35) { puff(p.x, p.y, 'black'); game.particles.push({ type: 'fire', x: p.x + rand(-10, 10), y: p.y + rand(-6, 6), vx: rand(-20, 20), vy: rand(-40, 0), life: 0.35, max: 0.35, size: rand(8, 14) }); }
+      if (p.y > H - 70) { p.dead = true; for (let i = 0; i < 3; i++) splash(p.x + rand(-20, 20), H - 70); explosion(p.x, H - 75, 0.5); }
+      break;
+  }
+}
+
+/* =====================================================================
+   6. WAVES
+   Every wave: more enemies, shorter gaps, tougher and faster enemies.
+   New enemy types join the mix as you go. Every 10th wave is a boss.
+   ===================================================================== */
+const isBossWave = w => w % 10 === 0;
+// Waves 30, 50, 70... bring the alien mothership; 10, 20, 40, 60... the cruiser.
+const bossTypeFor = w => (w >= 30 && (w / 10) % 2 === 1) ? 'mothership' : 'warship';
+
+// The "menu" of enemies for wave w as [type, weight] pairs.
+function enemyPool(w) {
+  const pool = [['jet', 3], ['heli', 2]];
+  if (w >= 3)  pool.push(['boat', 2 + w * 0.08]);
+  if (w >= 5)  pool.push(['missile', 1.5 + w * 0.12]);
+  if (w >= 7)  pool.push(['fastjet', 1 + w * 0.12]);
+  if (w >= 21) pool.push(['saucer', 1.5 + (w - 20) * 0.2]);
+  return pool;
+}
+
+function buildWave(w) {
+  let count = 4 + Math.floor(w * 2);
+  const gap = Math.max(0.35, 2.1 - w * 0.12);
+  const pool = enemyPool(w), total = pool.reduce((s, p) => s + p[1], 0);
+  const list = [];
+  let at = 0.5;
+  if (isBossWave(w)) { list.push({ type: bossTypeFor(w), at: 0.5 }); count = Math.floor(count * 0.4); at = 5; }
+  for (let i = 0; i < count; i++) {
+    let r = Math.random() * total, type = pool[0][0];
+    for (const [t, wgt] of pool) { if ((r -= wgt) < 0) { type = t; break; } }
+    list.push({ type, at });
+    if (type === 'missile' && w >= 9) list.push({ type, at: at + 0.25 });   // missiles come in pairs later on
+    at += gap * rand(0.6, 1.4) * (isBossWave(w) ? 1.8 : 1);
+  }
+  return list;
+}
+
+function startWave(w) {
+  game.wave = w;
+  game.mode = 'play';
+  game.waveTime = 0;
+  game.spawnQueue = buildWave(w);
+  const boss = isBossWave(w) ? (bossTypeFor(w) === 'warship' ? 'BOSS: ENEMY CRUISER' : 'BOSS: ALIEN MOTHERSHIP') : null;
+  game.banner = { text: 'WAVE ' + w, sub: boss || ('Incoming contacts: ' + game.spawnQueue.length), t: 2.4 };
+}
+
+function updateWave(dt) {
+  game.waveTime += dt;
+  while (game.spawnQueue.length && game.spawnQueue[0].at <= game.waveTime) spawnEnemy(game.spawnQueue.shift().type);
+  const hostiles = game.enemies.some(isTarget);
+  if (!game.spawnQueue.length && !hostiles && game.mode === 'play') {
+    const bonus = 100 + 25 * game.wave;
+    game.money += bonus;
+    game.lastBonus = bonus;
+    if (!game.bossBoom) game.banner = { text: 'WAVE ' + game.wave + ' CLEARED', sub: 'Bonus +$' + bonus, t: 2.5 };
+    game.mode = 'cleared';
+    game.waveClearTimer = 2.6;
+  }
+}
+
+/* =====================================================================
+   7. SHOP
+   Each item knows its price, whether you can buy it, and what it does.
+   ===================================================================== */
+const SHOP = [
+  { id: 'cannon', name: 'Auto-Cannon', desc: 'A small turret that aims and fires on its own.',
+    cost: () => 350 + game.cannons.length * 250, can: () => game.cannons.length < 3, info: () => 'Owned ' + game.cannons.length + '/3',
+    buy: () => game.cannons.push({ aim: -0.5, cool: 0 }) },
+  { id: 'cannonUp', name: 'Cannon Upgrade', desc: 'All auto-cannons fire faster.',
+    cost: () => 300 * game.cannonLevel, can: () => game.cannons.length > 0 && game.cannonLevel < 4, info: () => 'Level ' + game.cannonLevel + '/4',
+    locked: () => game.cannons.length === 0 ? 'NEED A CANNON' : null,
+    buy: () => game.cannonLevel++ },
+  { id: 'ally', name: 'Friendly Jet', desc: 'An F/A-18 that patrols the sky and shoots enemies.',
+    cost: () => 600 + game.allies.length * 300, can: () => game.allies.length < 3, info: () => 'Flying ' + game.allies.length + '/3',
+    buy: () => { const ph = game.allies.length * 2.1; game.allies.push({ x: 640 + Math.cos(ph) * 620, y: 120, t: 0, phase: ph, dir: 1, cool: 0, tilt: 0 }); } },
+  { id: 'ap', name: 'AP Shells', desc: '+50% damage for you AND your helpers.',
+    cost: () => 400 * (game.apLevel + 1), can: () => game.apLevel < 5, info: () => 'Level ' + game.apLevel + '/5',
+    buy: () => game.apLevel++ },
+  { id: 'repair', name: 'Hull Repair', desc: 'Patch up 30 points of hull damage.',
+    cost: () => 150, can: () => game.hull < game.hullMax, locked: () => game.hull >= game.hullMax ? 'HULL IS FULL' : null, info: () => 'Hull ' + Math.ceil(game.hull) + '/' + game.hullMax,
+    buy: () => { game.hull = Math.min(game.hullMax, game.hull + 30); } },
+  { id: 'armor', name: 'Armor Plating', desc: 'Take 8% less damage. +10 max hull.',
+    cost: () => 350 * (game.armor + 1), can: () => game.armor < 5, info: () => 'Level ' + game.armor + '/5',
+    buy: () => { game.armor++; game.hullMax += 10; game.hull += 10; } },
+  { id: 'heavy', name: 'Heavy Shells x10', desc: 'Slow but huge hits with splash damage.',
+    cost: () => 120, can: () => game.ammo.heavy < 90, info: () => 'Have ' + game.ammo.heavy,
+    buy: () => { game.ammo.heavy += 10; } },
+  { id: 'missile', name: 'Guided Missiles x4', desc: 'Home in on targets. Massive damage.',
+    cost: () => 220, can: () => game.ammo.missile < 40, info: () => 'Have ' + game.ammo.missile,
+    buy: () => { game.ammo.missile += 4; } }
+];
+
+// Try to buy an item. Returns true if it worked.
+function buyItem(id) {
+  const item = SHOP.find(i => i.id === id);
+  if (!item || !item.can() || game.money < item.cost()) return false;
+  game.money -= item.cost();
+  item.buy();
+  game.shopFlash = { id, t: 0.3 };       // brief highlight so a tap feels responsive
+  return true;
+}
+
+function openShop() { game.mode = 'shop'; input.down = false; game.banner = null; }
+function closeShop() { startWave(game.wave + 1); }
+
+/* =====================================================================
+   8. RENDERING
+   ===================================================================== */
+function drawSky() { ctx.drawImage(ASSETS.sky, 0, 0); }
+
+// The sea is drawn in thin horizontal strips. Strips near the bottom
+// scroll faster and bob more, which makes the water feel alive and deep.
+function drawOcean() {
+  const tex = ASSETS.ocean, h = tex.height, strip = 6, t = game.time;
+  for (let y = 0; y < h; y += strip) {
+    const depth = y / h;
+    const off = ((t * (4 + 26 * depth) + Math.sin(t * 0.7 + y * 0.05) * 3 * depth) % W + W) % W;
+    const bob = Math.sin(t * 1.1 + y * 0.09) * (0.4 + depth * 1.6);
+    const dy = HORIZON + y + bob;
+    ctx.drawImage(tex, off, y, W - off, strip, 0, dy, W - off, strip + 1);
+    if (off > 0) ctx.drawImage(tex, 0, y, off, strip, W - off, dy, off, strip + 1);
+  }
+  // shimmer: glints that twinkle on and off, thickest under the sun
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const s of ASSETS.glints) {
+    const a = Math.pow(Math.max(0, Math.sin(t * s.speed + s.phase)), 12) * s.bright;
+    if (a < 0.02) continue;
+    ctx.fillStyle = `rgba(255,248,225,${a})`;
+    ctx.fillRect((s.x + t * s.drift) % W, s.y, s.w, s.h);
+  }
+  ctx.restore();
+  // haze where sea meets sky
+  ctx.fillStyle = linGrad(ctx, 0, HORIZON - 14, 0, HORIZON + 30, [[0, 'rgba(225,228,226,0)'], [0.4, 'rgba(225,228,226,0.55)'], [1, 'rgba(225,228,226,0)']]);
+  ctx.fillRect(0, HORIZON - 14, W, 44);
+}
+
+function makeGlints() {
+  const arr = [];
+  for (let i = 0; i < 420; i++) {
+    const nearSun = i < 220;
+    const y = nearSun ? HORIZON + Math.pow(Math.random(), 1.5) * 200 : rand(HORIZON + 4, H);
+    const depth = (y - HORIZON) / (H - HORIZON);
+    const x = nearSun ? 930 + rand(-1, 1) * (40 + depth * 260) : rand(0, W);
+    arr.push({ x: (x + W) % W, y, w: 2 + depth * 14 * Math.random(), h: 1 + depth * 1.5, speed: rand(1, 3.5), phase: rand(0, 7),
+      bright: nearSun ? rand(0.35, 0.9) : rand(0.12, 0.35), drift: nearSun ? 0 : 4 + depth * 20 });
+  }
+  return arr;
+}
+
+function drawShip() {
+  const p = shipToScreen(0, 0);
+  ctx.drawImage(ASSETS.ship, p.x, p.y);
+  // the turret (that's you!)
+  const pv = turretPivot();
+  ctx.save(); ctx.translate(pv.x, pv.y);
+  // barrel
+  ctx.save(); ctx.rotate(game.aim);
+  ctx.fillStyle = linGrad(ctx, 0, -4, 0, 4, [[0, '#c3c9ce'], [0.5, '#80888f'], [1, '#3e454b']]);
+  ctx.fillRect(-game.recoil, -4, BARREL_LEN, 8);
+  ctx.fillStyle = '#2b3035'; ctx.fillRect(BARREL_LEN - game.recoil - 4, -4.5, 4, 9);
+  ctx.restore();
+  // angular gun shield (Mk 45 style)
+  poly(ctx, [-30, 16, -28, -6, -14, -15, 14, -15, 26, -3, 28, 16]);
+  ctx.fillStyle = linGrad(ctx, 0, -15, 0, 16, [[0, '#d2d8dc'], [0.5, '#9aa2a8'], [1, '#6a7279']]); ctx.fill();
+  ctx.strokeStyle = 'rgba(40,45,50,0.5)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.fillRect(-13, -14, 26, 2);
+  // the "sentient" part: a glowing sensor eye that tracks your aim
+  const glow = 0.6 + Math.sin(game.time * 4) * 0.2;
+  ctx.fillStyle = `rgba(255,60,40,${glow})`; ctx.beginPath(); ctx.arc(10, -5, 3, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  // foam where the hull meets the water: a soft wavy band plus drifting flecks
+  ctx.save();
+  ctx.strokeStyle = 'rgba(230,238,242,0.45)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath();
+  for (let x = p.x + 30; x <= p.x + 716; x += 6) {
+    const yy = WATERLINE + 3 + Math.sin(game.time * 2.2 + x * 0.05) * 1.6;
+    if (x === p.x + 30) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+  }
+  ctx.stroke();
+  ctx.fillStyle = linGrad(ctx, 0, WATERLINE, 0, WATERLINE + 14, [[0, 'rgba(220,232,238,0.35)'], [1, 'rgba(220,232,238,0)']]);
+  ctx.fillRect(p.x + 30, WATERLINE + 2, 686, 12);
+  for (let i = 0; i < 26; i++) {                          // flecks drift aft as the bow cuts the water
+    const x = p.x + 716 - ((i * 53 + game.time * 25) % 690), yy = WATERLINE + 6 + (i % 3) * 3;
+    ctx.fillStyle = 'rgba(235,242,245,0.3)'; ctx.beginPath(); ctx.ellipse(x, yy, 7 + (i % 4) * 2, 1.6, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+  // helper auto-cannons
+  game.cannons.forEach((c, i) => {
+    const sp = shipToScreen(CANNON_SPOTS[i].x, CANNON_SPOTS[i].y);
+    ctx.save(); ctx.translate(sp.x, sp.y);
+    ctx.save(); ctx.rotate(c.aim);
+    ctx.fillStyle = '#3d444a'; ctx.fillRect(0, -2, 22, 4); ctx.restore();
+    ctx.fillStyle = linGrad(ctx, 0, -8, 0, 7, [[0, '#d0d6da'], [1, '#6b737a']]);
+    ctx.beginPath(); ctx.arc(0, 0, 8, Math.PI, 0); ctx.lineTo(9, 7); ctx.lineTo(-9, 7); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,60,40,0.8)'; ctx.fillRect(-2, -4, 3, 2);
+    ctx.restore();
+  });
+  // damage smoke when the hull is hurt
+  if (game.hull < game.hullMax * 0.6 && Math.random() < (1 - game.hull / game.hullMax) * 0.6) puff(p.x + rand(300, 600), p.y + rand(100, 150), 'black');
+}
+
+function drawEnemy(e) {
+  ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(e.angle);
+  const t = game.time;
+  switch (e.type) {
+    case 'jet': case 'fastjet': {
+      // afterburner flicker
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      const fl = rand(0.7, 1) * (e.type === 'fastjet' ? 1.5 : 1);
+      ctx.fillStyle = linGrad(ctx, 72, 0, 72 + 30 * fl, 0, [[0, 'rgba(255,200,120,0.9)'], [1, 'rgba(255,90,20,0)']]);
+      ctx.beginPath(); ctx.moveTo(72, -4); ctx.lineTo(72 + 32 * fl, 0); ctx.lineTo(72, 4); ctx.fill();
+      ctx.restore();
+      ctx.drawImage(e.type === 'jet' ? ASSETS.jet : ASSETS.jetDark, -80, -32);
+      break;
+    }
+    case 'heli': {
+      ctx.drawImage(ASSETS.heli, -90, -40);
+      // main rotor: a blurry disc plus one sharp blade sweeping around
+      const L = 86, ph = t * 40 + e.seed;
+      ctx.fillStyle = 'rgba(30,32,30,0.18)'; ctx.beginPath(); ctx.ellipse(-10, -27, L, 4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(25,25,25,0.75)'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(-10 - Math.cos(ph) * L, -27); ctx.lineTo(-10 + Math.cos(ph) * L, -27); ctx.stroke();
+      ctx.fillStyle = 'rgba(30,30,30,0.3)'; ctx.beginPath(); ctx.arc(83, -20, 11, 0, Math.PI * 2); ctx.fill();   // tail rotor
+      break;
+    }
+    case 'boat': {
+      ctx.scale(e.scale, e.scale);
+      // wake: a white V of churned water trailing behind
+      ctx.fillStyle = linGrad(ctx, 60, 0, 260, 0, [[0, 'rgba(240,246,248,0.75)'], [1, 'rgba(240,246,248,0)']]);
+      ctx.beginPath(); ctx.moveTo(60, 12); ctx.lineTo(260, 4 + Math.sin(t * 4) * 2); ctx.lineTo(260, 24); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(240,246,248,0.6)';                       // bow spray
+      ctx.beginPath(); ctx.ellipse(-70, 14, 18 + Math.sin(t * 9) * 3, 4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.drawImage(ASSETS.boat, -75, -30);
+      break;
+    }
+    case 'missile': case 'shell': {
+      if (e.type === 'shell') {
+        ctx.fillStyle = linGrad(ctx, 0, -4, 0, 4, [[0, '#d9b36a'], [1, '#5a4320']]);
+        ctx.beginPath(); ctx.ellipse(0, 0, 9, 4, 0, 0, Math.PI * 2); ctx.fill();
+      } else ctx.drawImage(ASSETS.missile, -32, -8);
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';           // rocket flame / glowing tracer
+      ctx.fillStyle = linGrad(ctx, 28, 0, 60, 0, [[0, 'rgba(255,230,150,0.95)'], [1, 'rgba(255,100,20,0)']]);
+      ctx.beginPath(); ctx.moveTo(28, -3); ctx.lineTo(56 + rand(-6, 6), 0); ctx.lineTo(28, 3); ctx.fill(); ctx.restore();
+      break;
+    }
+    case 'plasma': {
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 18);
+      g.addColorStop(0, 'rgba(230,255,240,1)'); g.addColorStop(0.4, 'rgba(90,255,160,0.8)'); g.addColorStop(1, 'rgba(40,255,120,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, 18 + Math.sin(t * 20) * 2, 0, Math.PI * 2); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+      break;
+    }
+    case 'saucer': {
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';           // underside glow
+      const g = ctx.createRadialGradient(0, 14, 0, 0, 14, 50);
+      g.addColorStop(0, 'rgba(120,255,190,0.5)'); g.addColorStop(1, 'rgba(120,255,190,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, 14, 50, 16, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+      ctx.drawImage(ASSETS.saucer, -60, -34);
+      for (let i = 0; i < 7; i++) {                                     // chasing rim lights
+        const on = (Math.floor(t * 10) + i) % 3 === 0;
+        ctx.fillStyle = on ? '#9dffcf' : '#2f5a48';
+        ctx.beginPath(); ctx.arc(-45 + i * 15, 2, 2.5, 0, Math.PI * 2); ctx.fill();
+      }
+      break;
+    }
+    case 'warship': {
+      ctx.drawImage(ASSETS.warship, -260, -150);
+      ctx.restore();
+      for (let i = 0; i < 2; i++) {                                     // turrets track your ship
+        const tp = warshipTurret(e, i);
+        ctx.save(); ctx.translate(tp.x, tp.y);
+        ctx.save(); ctx.rotate(tp.aim); ctx.fillStyle = '#3b4249'; ctx.fillRect(0, -3, 34, 6); ctx.restore();
+        ctx.fillStyle = linGrad(ctx, 0, -12, 0, 8, [[0, '#a5adb4'], [1, '#4a5259']]);
+        poly(ctx, [-18, 8, -14, -8, 10, -12, 18, 0, 18, 8]); ctx.fill();
+        ctx.restore();
+      }
+      // wake along the hull
+      ctx.fillStyle = 'rgba(235,242,245,0.4)';
+      for (let x = -230; x < 240; x += 14) { ctx.beginPath(); ctx.ellipse(e.x + x, e.y + 3 + Math.sin(t * 2 + x) * 1.5, 9, 1.8, 0, 0, Math.PI * 2); ctx.fill(); }
+      drawHitFlash(e);
+      return;
+    }
+    case 'mothership': {
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(0, 30, 0, 0, 30, 160);
+      g.addColorStop(0, 'rgba(120,255,190,0.45)'); g.addColorStop(1, 'rgba(120,255,190,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, 30, 160, 40, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+      ctx.drawImage(ASSETS.mothership, -220, -80);
+      for (let i = 0; i < 14; i++) {
+        const on = (Math.floor(t * 8) + i) % 4 === 0;
+        ctx.fillStyle = on ? '#b8ffe0' : '#2f5a48';
+        ctx.beginPath(); ctx.arc(-182 + i * 28, 6, 3.5, 0, Math.PI * 2); ctx.fill();
+      }
+      break;
+    }
+  }
+  ctx.restore();
+  drawHitFlash(e);
+  if (!e.boss && e.state !== 'leaving') drawTimerRing(e);
+}
+
+// Brief bright flash where a target was hit.
+function drawHitFlash(e) {
+  if (e.flash <= 0) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = `rgba(255,220,180,${e.flash * 0.45})`;
+  ctx.beginPath();
+  if (e.hw) { ctx.restore(); return; }            // bosses only throw sparks (a big flash looks washed out)
+  ctx.arc(e.x, e.y, e.r * e.scale, 0, Math.PI * 2);
+  ctx.fill(); ctx.restore();
+}
+
+// Friendly jets (sprite flipped when flying right).
+function drawAllies() {
+  for (const a of game.allies) {
+    ctx.save(); ctx.translate(a.x, a.y); ctx.scale(-a.dir, 1); ctx.rotate(-a.tilt * a.dir * -1);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = linGrad(ctx, 72, 0, 100, 0, [[0, 'rgba(255,200,120,0.9)'], [1, 'rgba(255,90,20,0)']]);
+    ctx.beginPath(); ctx.moveTo(72, -4); ctx.lineTo(100 + rand(-4, 4), 0); ctx.lineTo(72, 4); ctx.fill(); ctx.restore();
+    ctx.drawImage(ASSETS.jetNavy, -80, -32);
+    ctx.restore();
+  }
+}
+
+// The countdown ring: a circle that empties and turns from green to red.
+function drawTimerRing(e) {
+  const left = Math.max(0, 1 - e.t / e.T), R = e.r * e.scale + 10;
+  const hue = 120 * left;
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.arc(e.x, e.y, R, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = `hsl(${hue},90%,55%)`;
+  ctx.beginPath(); ctx.arc(e.x, e.y, R, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * left); ctx.stroke();
+  // seconds left + health bar
+  ctx.font = ui.big ? 'bold 21px Arial' : 'bold 13px Arial'; ctx.textAlign = 'center';
+  ctx.fillStyle = left < 0.3 ? '#ff6b5b' : '#fff';
+  ctx.fillText((e.T - e.t).toFixed(1), e.x, e.y - R - 6);
+  if (e.hp < e.maxHp) {
+    const bh = ui.big ? 7 : 4;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(e.x - 24, e.y + R + 4, 48, bh);
+    ctx.fillStyle = '#ff5544'; ctx.fillRect(e.x - 24, e.y + R + 4, 48 * Math.max(0, e.hp / e.maxHp), bh);
+  }
+}
+
+function drawBullets() {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  for (const b of game.bullets) {
+    if (b.kind === 'missile') {          // your guided missile: sprite + flame
+      ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(Math.atan2(b.vy, b.vx) - Math.PI);
+      ctx.globalCompositeOperation = 'source-over'; ctx.drawImage(ASSETS.missile, -32, -8);
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = linGrad(ctx, 28, 0, 64, 0, [[0, 'rgba(255,240,170,1)'], [1, 'rgba(255,100,20,0)']]);
+      ctx.beginPath(); ctx.moveTo(28, -4); ctx.lineTo(62 + rand(-6, 6), 0); ctx.lineTo(28, 4); ctx.fill();
+      ctx.restore(); continue;
+    }
+    const heavy = b.kind === 'heavy';
+    ctx.strokeStyle = heavy ? 'rgba(255,150,60,0.9)' : 'rgba(255,220,120,0.95)';
+    ctx.lineWidth = heavy ? 5 : 2.5;
+    ctx.beginPath(); ctx.moveTo(b.x - b.vx * 0.022, b.y - b.vy * 0.022); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,140,40,0.25)'; ctx.lineWidth = heavy ? 12 : 7;
+    ctx.beginPath(); ctx.moveTo(b.x - b.vx * 0.015, b.y - b.vy * 0.015); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawParticles(layer) {
+  for (const p of game.particles) {
+    const k = p.life / p.max;                 // 1 = just born, 0 = about to vanish
+    if (layer === 'back' && p.type !== 'smoke') continue;
+    if (layer === 'front' && p.type === 'smoke') continue;
+    switch (p.type) {
+      case 'smoke': {
+        const img = p.shade < 90 ? ASSETS.puffDark : p.shade < 160 ? ASSETS.puffMid : ASSETS.puffLight;
+        ctx.globalAlpha = p.alpha * k;
+        ctx.drawImage(img, p.x - p.size * 1.3, p.y - p.size * 1.3, p.size * 2.6, p.size * 2.6);
+        ctx.globalAlpha = 1; break;
+      }
+      case 'fire': {
+        ctx.save(); ctx.globalCompositeOperation = 'lighter';
+        const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
+        g.addColorStop(0, `rgba(255,${180 + 60 * k | 0},90,${0.9 * k})`); g.addColorStop(1, 'rgba(255,60,0,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill(); ctx.restore(); break;
+      }
+      case 'flash': {
+        ctx.save(); ctx.globalCompositeOperation = 'lighter';
+        const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size);
+        g.addColorStop(0, `rgba(255,250,220,${k})`); g.addColorStop(1, 'rgba(255,160,60,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill(); ctx.restore(); break;
+      }
+      case 'spark':
+        ctx.strokeStyle = `rgba(255,220,140,${k})`; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.02, p.y - p.vy * 0.02); ctx.stroke(); break;
+      case 'spray':
+        ctx.fillStyle = `rgba(230,240,245,${0.8 * k})`; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill(); break;
+      case 'debris':
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.angle); ctx.fillStyle = '#2a2d30';
+        ctx.fillRect(-p.size, -p.size / 2, p.size * 2, p.size); ctx.restore(); break;
+      case 'wreck': {
+        const img = darkSprite(p.sprite); ctx.save();
+        if (p.sink) { ctx.beginPath(); ctx.rect(0, 0, W, p.waterY); ctx.clip(); ctx.globalAlpha = Math.min(1, k * 2); }
+        ctx.translate(p.x, p.y); ctx.rotate(p.angle); if (p.scale) ctx.scale(p.scale, p.scale);
+        if (p.sprite === 'warship') ctx.drawImage(img, -260, -90); else ctx.drawImage(img, -img.width / 2, -img.height / 2);
+        ctx.restore(); break;
+      }
+      case 'muzzle': {
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.angle); ctx.globalCompositeOperation = 'lighter';
+        const s = p.size * (0.7 + Math.random() * 0.5);
+        const g = ctx.createRadialGradient(8 * s, 0, 0, 8 * s, 0, 26 * s);
+        g.addColorStop(0, 'rgba(255,255,220,1)'); g.addColorStop(0.4, 'rgba(255,190,80,0.8)'); g.addColorStop(1, 'rgba(255,100,20,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(10 * s, 0, 28 * s, 11 * s, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore(); break;
+      }
+      case 'streak':
+        ctx.strokeStyle = `rgba(${p.color || '255,230,180'},${k})`; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x2, p.y2); ctx.stroke(); break;
+    }
+  }
+}
+
+function drawTexts() {
+  ctx.textAlign = 'center'; ctx.font = ui.big ? 'bold 26px Arial' : 'bold 18px Arial';
+  for (const t of game.texts) {
+    ctx.fillStyle = 'rgba(0,0,0,' + Math.min(1, t.life) * 0.6 + ')'; ctx.fillText(t.text, t.x + 1, t.y + 1);
+    ctx.globalAlpha = Math.min(1, t.life); ctx.fillStyle = t.color; ctx.fillText(t.text, t.x, t.y); ctx.globalAlpha = 1;
+  }
+}
+
+function panel(x, y, w, h, alpha = 0.55) {
+  ctx.fillStyle = `rgba(8,14,20,${alpha})`; ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = 'rgba(150,180,200,0.35)'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+}
+
+// Where the on-screen buttons are. Used both for drawing and for tap tests,
+// so they always match. Phones (ui.big) get much bigger buttons.
+function ammoRects() {
+  if (ui.big) return AMMO_ORDER.map((id, i) => ({ x: 16 + i * 192, y: H - 106, w: 182, h: 92, id }));
+  const bx = W / 2 - 195;
+  return AMMO_ORDER.map((id, i) => ({ x: bx + i * 130, y: H - 62, w: 120, h: 48, id }));
+}
+function pauseRect() { return ui.big ? { x: 16, y: 136, w: 136, h: 66 } : { x: W - 330, y: 14, w: 54, h: 54 }; }
+
+function drawHUD() {
+  const big = ui.big;
+  // hull bar
+  const hw = big ? 380 : 330;
+  panel(16, 14, hw, big ? 74 : 54);
+  ctx.textAlign = 'left'; ctx.font = big ? 'bold 21px Arial' : 'bold 13px Arial'; ctx.fillStyle = '#cfe3ee';
+  ctx.fillText('HULL', 28, big ? 40 : 34);
+  const k = game.hull / game.hullMax, barY = big ? 50 : 40, barH = big ? 26 : 16, barW = hw - 26;
+  ctx.fillStyle = '#1b2329'; ctx.fillRect(28, barY, barW, barH);
+  ctx.fillStyle = k > 0.5 ? '#4fd36b' : k > 0.25 ? '#f0b53a' : '#ff4b3a';
+  ctx.fillRect(28, barY, barW * k, barH);
+  ctx.fillStyle = '#fff'; ctx.font = big ? 'bold 20px Arial' : 'bold 12px Arial'; ctx.textAlign = 'right';
+  ctx.fillText(Math.ceil(game.hull) + ' / ' + game.hullMax, 16 + hw - 14, big ? 40 : 34);
+  // wave + money
+  const ww = big ? 324 : 254;
+  panel(W - ww - 16, 14, ww, big ? 74 : 54);
+  ctx.textAlign = 'left'; ctx.font = big ? 'bold 32px Arial' : 'bold 22px Arial'; ctx.fillStyle = '#fff';
+  ctx.fillText('WAVE ' + Math.max(1, game.wave), W - ww - 2, big ? 62 : 48);
+  ctx.textAlign = 'right'; ctx.fillStyle = '#ffe27a'; ctx.fillText('$' + game.money, W - 30, big ? 62 : 48);
+  // ammo selector (tap or click a box, or press 1/2/3)
+  ammoRects().forEach(r => {
+    const id = r.id, sel = game.ammoType === id, n = game.ammo[id];
+    panel(r.x, r.y, r.w, r.h, sel ? 0.8 : 0.45);
+    if (sel) { ctx.strokeStyle = '#ffd25a'; ctx.lineWidth = big ? 4 : 2; ctx.strokeRect(r.x + 2, r.y + 2, r.w - 4, r.h - 4); }
+    ctx.textAlign = 'left';
+    ctx.font = big ? 'bold 18px Arial' : 'bold 12px Arial'; ctx.fillStyle = '#9fb6c4';
+    ctx.fillText(AMMO[id].key, r.x + (big ? 12 : 8), r.y + (big ? 34 : 18));
+    ctx.fillStyle = n > 0 ? '#fff' : '#ff6b5b'; ctx.font = big ? 'bold 24px Arial' : 'bold 14px Arial';
+    ctx.fillText(AMMO[id].name, r.x + (big ? 36 : 22), r.y + (big ? 36 : 18));
+    ctx.font = big ? 'bold 32px Arial' : 'bold 16px Arial'; ctx.fillStyle = sel ? '#ffd25a' : '#cfe3ee';
+    ctx.fillText(n === Infinity ? '\u221e' : String(n), r.x + (big ? 36 : 22), r.y + (big ? 76 : 39));
+  });
+  // pause button (only while a wave is being fought)
+  if (game.mode === 'play' && !game.paused) {
+    const r = pauseRect();
+    panel(r.x, r.y, r.w, r.h, 0.6);
+    const bh = r.h * 0.46, by = r.y + (r.h - bh) / 2, bx = r.x + (big ? 20 : r.w / 2 - 9);
+    ctx.fillStyle = '#e8f1f6'; ctx.fillRect(bx, by, 6, bh); ctx.fillRect(bx + 12, by, 6, bh);   // the "II" symbol
+    if (big) { ctx.textAlign = 'left'; ctx.font = 'bold 22px Arial'; ctx.fillText('PAUSE', bx + 30, r.y + r.h / 2 + 8); }
+  }
+  // upgrades owned
+  panel(16, big ? 94 : 72, hw, big ? 36 : (DEBUG ? 40 : 22));
+  ctx.textAlign = 'left'; ctx.font = big ? 'bold 18px Arial' : 'bold 12px Arial'; ctx.fillStyle = '#cfe3ee';
+  ctx.fillText(`ARMOR ${game.armor}   AP ${game.apLevel}   CANNONS ${game.cannons.length}   JETS ${game.allies.length}`, 28, big ? 118 : 87);
+  if (DEBUG && !big) { ctx.fillStyle = '#ff9d5c'; ctx.fillText('DEBUG: N skip wave  B boss  M +$5000  H heal', 28, 104); }
+  // boss health bar
+  const boss = game.enemies.find(e => e.boss);
+  if (boss) {
+    const bw = big ? 480 : 520, big2 = big ? 1 : 0;
+    panel(W / 2 - bw / 2, 14, bw, 40 + big2 * 14, 0.65);
+    ctx.textAlign = 'center'; ctx.font = big ? 'bold 19px Arial' : 'bold 13px Arial'; ctx.fillStyle = '#ffb3a8';
+    ctx.fillText(boss.type === 'warship' ? 'ENEMY CRUISER' : 'ALIEN MOTHERSHIP', W / 2, 30 + big2 * 6);
+    ctx.fillStyle = '#2a1a1a'; ctx.fillRect(W / 2 - bw / 2 + 12, 36 + big2 * 8, bw - 24, 10 + big2 * 4);
+    ctx.fillStyle = boss.type === 'warship' ? '#ff4b3a' : '#5cffaa';
+    ctx.fillRect(W / 2 - bw / 2 + 12, 36 + big2 * 8, (bw - 24) * Math.max(0, boss.hp / boss.maxHp), 10 + big2 * 4);
+  }
+  // banner
+  if (game.banner) {
+    const a = Math.min(1, game.banner.t * 2);
+    ctx.globalAlpha = a; ctx.textAlign = 'center';
+    ctx.font = 'bold 54px Arial'; ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillText(game.banner.text, W / 2 + 3, 203);
+    ctx.fillStyle = '#fff'; ctx.fillText(game.banner.text, W / 2, 200);
+    ctx.font = 'bold 20px Arial'; ctx.fillStyle = '#ffe27a'; ctx.fillText(game.banner.sub, W / 2, 236);
+    ctx.globalAlpha = 1;
+  }
+  // red flash when hit
+  if (game.hurtFlash > 0) { ctx.fillStyle = `rgba(255,0,0,${game.hurtFlash * 0.4})`; ctx.fillRect(0, 0, W, H); }
+}
+
+function drawCrosshair() {
+  const { x, y } = input;
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2);
+  ctx.moveTo(x - 20, y); ctx.lineTo(x - 6, y); ctx.moveTo(x + 6, y); ctx.lineTo(x + 20, y);
+  ctx.moveTo(x, y - 20); ctx.lineTo(x, y - 6); ctx.moveTo(x, y + 6); ctx.lineTo(x, y + 20); ctx.stroke();
+}
+
+// Split text into lines that fit a width.
+function wrapText(text, maxW) {
+  const words = text.split(' '), lines = [];
+  let line = '';
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = w; } else line = test;
+  }
+  lines.push(line);
+  return lines;
+}
+
+const inRect = (r, x, y) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+
+// The shop screen: 8 cards and a "launch next wave" button.
+// On phones (ui.big) the shop fills the whole screen with bigger text and buttons.
+function drawShop() {
+  const big = ui.big;
+  ctx.fillStyle = 'rgba(4,9,14,0.55)'; ctx.fillRect(0, 0, W, H);
+  // layout numbers: [phone, desktop]
+  const L = big
+    ? { px: 12, py: 8, pw: W - 24, ph: H - 16, titleY: 58, cardX: 24, cardY: 82, cardW: 301, cardH: 238, gap: 12,
+        fName: 26, fDesc: 20, fInfo: 19, fBtn: 24, descY: 64, lineH: 23, infoY: 150, btnY: 166, btnH: 60, nextY: 588, nextW: 520, nextH: 96 }
+    : { px: 150, py: 96, pw: 980, ph: 560, titleY: 140, cardX: 180, cardY: 186, cardW: 220, cardH: 184, gap: 12,
+        fName: 18, fDesc: 14, fInfo: 13, fBtn: 16, descY: 56, lineH: 18, infoY: 122, btnY: 136, btnH: 34, nextY: 586, nextW: 340, nextH: 50 };
+  panel(L.px, L.py, L.pw, L.ph, 0.85);
+  ctx.textAlign = 'left'; ctx.font = (big ? 'bold 36px' : 'bold 30px') + ' Arial'; ctx.fillStyle = '#fff';
+  ctx.fillText('SHIPYARD', L.cardX + 6, L.titleY);
+  ctx.font = (big ? '21px' : '16px') + ' Arial'; ctx.fillStyle = '#9fb6c4';
+  if (big) ctx.fillText('Wave ' + game.wave + ' cleared. Tap to buy, then launch.', L.cardX + 230, L.titleY - 4);
+  else ctx.fillText('Wave ' + game.wave + ' cleared. Spend your money, then launch the next wave.', 180, 166);
+  ctx.textAlign = 'right'; ctx.font = (big ? 'bold 36px' : 'bold 30px') + ' Arial'; ctx.fillStyle = '#ffe27a';
+  ctx.fillText('$' + game.money, L.px + L.pw - 30, L.titleY);
+  game.shopRects = [];
+  SHOP.forEach((item, i) => {
+    const r = { x: L.cardX + (i % 4) * (L.cardW + L.gap), y: L.cardY + Math.floor(i / 4) * (L.cardH + L.gap), w: L.cardW, h: L.cardH, id: item.id };
+    game.shopRects.push(r);
+    const cost = item.cost(), can = item.can(), afford = can && game.money >= cost;
+    const hover = !ui.touch && inRect(r, input.x, input.y);
+    ctx.fillStyle = hover && afford ? 'rgba(60,90,110,0.9)' : 'rgba(22,34,44,0.9)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = afford ? 'rgba(255,210,90,0.8)' : 'rgba(120,140,155,0.4)'; ctx.lineWidth = big ? 2.5 : 1.5;
+    ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    ctx.textAlign = 'left'; ctx.font = 'bold ' + L.fName + 'px Arial'; ctx.fillStyle = '#fff'; ctx.fillText(item.name, r.x + 14, r.y + (big ? 36 : 30));
+    ctx.font = L.fDesc + 'px Arial'; ctx.fillStyle = '#c3d3dd';
+    wrapText(item.desc, r.w - 28).forEach((l, j) => ctx.fillText(l, r.x + 14, r.y + L.descY + j * L.lineH));
+    ctx.font = 'bold ' + L.fInfo + 'px Arial'; ctx.fillStyle = '#8fb0c2'; ctx.fillText(item.info(), r.x + 14, r.y + L.infoY);
+    // price button
+    ctx.fillStyle = !can ? '#3a4249' : afford ? '#d9a62b' : '#5a4a2a'; ctx.fillRect(r.x + 14, r.y + L.btnY, r.w - 28, L.btnH);
+    ctx.textAlign = 'center'; ctx.font = 'bold ' + L.fBtn + 'px Arial'; ctx.fillStyle = !can ? '#9aa4ab' : afford ? '#1a1206' : '#b9a27a';
+    ctx.fillText(!can ? ((item.locked && item.locked()) || 'MAXED') : 'BUY  $' + cost, r.x + r.w / 2, r.y + L.btnY + L.btnH / 2 + L.fBtn * 0.36);
+    // white flash right after buying this item
+    if (game.shopFlash && game.shopFlash.id === item.id) {
+      ctx.fillStyle = 'rgba(255,255,255,' + (game.shopFlash.t / 0.3) * 0.45 + ')'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    }
+  });
+  const nb = { x: W / 2 - L.nextW / 2, y: L.nextY, w: L.nextW, h: L.nextH, id: 'next' };
+  game.shopRects.push(nb);
+  const pulse = 0.75 + Math.sin(game.time * 4) * 0.25;
+  ctx.fillStyle = `rgba(70,170,90,${pulse})`; ctx.fillRect(nb.x, nb.y, nb.w, nb.h);
+  ctx.textAlign = 'center'; ctx.font = (big ? 'bold 32px' : 'bold 22px') + ' Arial'; ctx.fillStyle = '#fff';
+  ctx.fillText('LAUNCH WAVE ' + (game.wave + 1) + (isBossWave(game.wave + 1) ? '  (BOSS!)' : '') + '  \u25b6', W / 2, nb.y + nb.h / 2 + (big ? 11 : 8));
+}
+
+function centerScreen(title, lines, footer) {
+  ctx.fillStyle = 'rgba(5,10,16,0.62)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  const big = ui.big, top = big ? 170 : 190, lh = big ? 42 : 32;
+  ctx.font = big ? 'bold 76px Arial' : 'bold 64px Arial'; ctx.fillStyle = '#fff'; ctx.fillText(title, W / 2, top);
+  ctx.font = big ? '28px Arial' : '20px Arial'; ctx.fillStyle = '#d6e4ec';
+  lines.forEach((l, i) => ctx.fillText(l, W / 2, top + 64 + i * lh));
+  if (footer) {
+    ctx.font = big ? 'bold 40px Arial' : 'bold 26px Arial'; ctx.fillStyle = `rgba(255,226,122,${0.6 + Math.sin(game.time * 4) * 0.4})`;
+    ctx.fillText(footer, W / 2, top + 64 + lines.length * lh + (big ? 46 : 50));
+  }
+}
+
+function render() {
+  ctx.save();
+  // screen shake: nudge everything by a random amount
+  if (game.shake > 0.3) ctx.translate(rand(-game.shake, game.shake), rand(-game.shake, game.shake));
+  drawSky();
+  drawOcean();
+  drawParticles('back');
+  // draw far things first: bosses, then boats (far to near), then aircraft
+  const layer = e => e.boss ? 0 : e.type === 'boat' ? 1 : 2;
+  const sorted = game.enemies.slice().sort((a, b) => layer(a) - layer(b) || (layer(a) === 1 ? a.y - b.y : 0));
+  for (const e of sorted) drawEnemy(e);
+  drawAllies();
+  drawShip();
+  drawBullets();
+  drawParticles('front');
+  drawTexts();
+  ctx.restore();
+
+  if (game.mode === 'title') {
+    if (ui.touch) centerScreen('SENTIENT CANNON', [
+      'You are the big gun on a US Navy destroyer. You can only aim and shoot.',
+      'Shoot every target before its countdown ring runs out.',
+      'Touch and drag to aim. Keep your finger down to fire.',
+      'Tap the boxes at bottom left to switch: Light / Heavy / Missiles',
+      'Earn money and upgrade between waves. Every 10th wave: BOSS!'
+    ], 'TAP TO START');
+    else centerScreen('SENTIENT CANNON', [
+      'You are the 5-inch gun on the bow of a US Navy destroyer. You woke up.',
+      'You cannot move. You can only aim and shoot.',
+      'Destroy every target before its countdown ring runs out, or it hits the ship.',
+      'MOUSE aim  \u2022  LEFT BUTTON fire (hold for auto-fire)  \u2022  1 / 2 / 3 or WHEEL switch ammo',
+      '1 Light shells (unlimited)  \u2022  2 Heavy shells (splash)  \u2022  3 Guided missiles (homing)',
+      'Earn money, upgrade between waves. Every 10th wave: BOSS.  \u2022  P or ESC pause'
+    ], 'CLICK TO START');
+    return;
+  }
+  drawHUD();
+  if (game.mode === 'shop') drawShop();
+  if (game.mode === 'gameover') {
+    centerScreen('SHIP LOST', [
+      'You held the line until wave ' + game.wave + '.',
+      'Targets destroyed: ' + game.kills + '   •   Money left: $' + game.money
+    ], ui.touch ? (game.time - game.overAt < 1 ? null : 'TAP TO PLAY AGAIN') : 'CLICK OR PRESS R TO RESTART');
+  } else if (game.paused) {
+    centerScreen('PAUSED', [ui.touch ? 'Tap anywhere to continue' : 'Click, or press P or ESC, to continue'], null);
+  }
+  // on a touch screen the crosshair only matters while fighting (it would sit on top of menus)
+  if (!ui.touch || game.mode === 'play' || game.mode === 'cleared') drawCrosshair();
+}
+
+/* =====================================================================
+   9. INPUT
+   ===================================================================== */
+// Convert a mouse/touch position on the page into game coordinates.
+function toGame(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (clientX - r.left) * W / r.width, y: (clientY - r.top) * H / r.height };
+}
+function aimAt(clientX, clientY) { const p = toGame(clientX, clientY); input.x = p.x; input.y = p.y; }
+
+// A click or tap landed at game position (x, y).
+// Handles menus and buttons. Returns true if it hit one, so it should NOT start firing.
+function pointerPressed(x, y) {
+  if (game.paused) { game.paused = false; return true; }        // any tap/click resumes
+  if (game.mode === 'title') { resetGame(); startWave(1); return true; }
+  if (game.mode === 'gameover') {
+    if (game.time - game.overAt >= 1) { resetGame(); startWave(1); }   // short delay so a held finger doesn't instantly restart
+    return true;
+  }
+  if (game.mode === 'shop') {
+    const r = game.shopRects.find(r => inRect(r, x, y));
+    if (r && r.id === 'next') closeShop();
+    else if (r) buyItem(r.id);
+    return true;                                   // never fire while shopping
+  }
+  if (game.mode === 'play' && inRect(pauseRect(), x, y)) { game.paused = true; input.down = false; return true; }
+  // an ammo box in the HUD switches ammo
+  const box = ammoRects().find(r => inRect(r, x, y));
+  if (box) { selectAmmo(box.id); return true; }
+  return false;
+}
+
+function selectAmmo(id) { if (game.ammo[id] > 0) game.ammoType = id; }
+
+canvas.addEventListener('mousemove', e => aimAt(e.clientX, e.clientY));
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  aimAt(e.clientX, e.clientY);
+  if (!pointerPressed(input.x, input.y)) input.down = true;
+});
+window.addEventListener('mouseup', () => { input.down = false; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const i = AMMO_ORDER.indexOf(game.ammoType), dir = e.deltaY > 0 ? 1 : -1;
+  for (let s = 1; s <= 3; s++) { const id = AMMO_ORDER[(i + dir * s + 9) % 3]; if (game.ammo[id] > 0) { game.ammoType = id; break; } }
+}, { passive: false });
+window.addEventListener('keydown', e => {
+  if (e.key === '1') selectAmmo('light');
+  if (e.key === '2') selectAmmo('heavy');
+  if (e.key === '3') selectAmmo('missile');
+  if ((e.key === 'p' || e.key === 'P' || e.key === 'Escape') && game.mode === 'play') { game.paused = !game.paused; input.down = false; }
+  if ((e.key === 'r' || e.key === 'R') && game.mode === 'gameover') { resetGame(); startWave(1); }
+  if ((e.key === 'Enter' || e.key === ' ') && game.mode === 'shop') closeShop();
+  if (DEBUG) {                                     // test shortcuts, only with ?debug=1 in the URL
+    const k = e.key.toLowerCase();
+    if (k === 'n' && (game.mode === 'play' || game.mode === 'cleared')) { game.enemies = []; game.spawnQueue = []; }
+    if (k === 'b') debugWave(10);
+    if (k === 'm') game.money += 5000;
+    if (k === 'h') game.hull = game.hullMax;
+  }
+});
+
+// Jump straight to any wave (used by the debug keys and automated tests).
+function debugWave(w) {
+  game.enemies = []; game.bullets = []; game.spawnQueue = [];
+  if (game.mode === 'title' || game.mode === 'gameover') resetGame();
+  game.paused = false;
+  startWave(w);
+}
+// ---------- Touch ----------
+// The first finger that lands on open sky/sea is the "aim finger": the crosshair
+// follows it and the gun fires while it stays down. Other fingers can tap the
+// ammo and pause buttons at the same time without moving your aim.
+// Listening on the whole page (not just the canvas) means the black bars at the
+// sides of a phone screen work for aiming too.
+let aimTouchId = null;
+function onTouchStart(e) {
+  if (e.target && e.target.id === 'error') return;          // let the error box scroll
+  e.preventDefault();                                        // no scrolling, zooming or fake mouse clicks
+  if (!ui.touch) { ui.touch = true; resize(); }              // switch to the big phone layout
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    const t = e.changedTouches[i], p = toGame(t.clientX, t.clientY);
+    if (pointerPressed(p.x, p.y)) continue;                  // it was a button or menu tap
+    if (aimTouchId === null) { aimTouchId = t.identifier; input.x = p.x; input.y = p.y; input.down = true; }
+  }
+}
+function onTouchMove(e) {
+  if (e.target && e.target.id === 'error') return;
+  e.preventDefault();
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    const t = e.changedTouches[i];
+    if (t.identifier === aimTouchId) aimAt(t.clientX, t.clientY);
+    else if (aimTouchId === null && game.mode === 'shop') aimAt(t.clientX, t.clientY);
+  }
+}
+function onTouchEnd(e) {
+  if (e.target && e.target.id === 'error') return;
+  e.preventDefault();
+  for (let i = 0; i < e.changedTouches.length; i++) {
+    if (e.changedTouches[i].identifier === aimTouchId) { aimTouchId = null; input.down = false; }
+  }
+}
+document.addEventListener('touchstart', onTouchStart, { passive: false });
+document.addEventListener('touchmove', onTouchMove, { passive: false });
+document.addEventListener('touchend', onTouchEnd, { passive: false });
+document.addEventListener('touchcancel', onTouchEnd, { passive: false });
+document.addEventListener('gesturestart', e => e.preventDefault());       // iOS pinch-zoom
+document.addEventListener('contextmenu', e => e.preventDefault());        // long-press menu
+
+// ---------- Fitting the screen ----------
+// The game always draws in 1280x720 "game pixels". resize() fits that 16:9 picture
+// into the visible screen as big as possible without stretching, and sets the
+// canvas's real pixel size from devicePixelRatio so it's sharp on phones.
+// The size is capped (MAX_SCALE) because phones get slow, and iOS refuses
+// canvases that are too big, if we go much higher.
+const MAX_SCALE = 1.5;                    // at most 1920x1080 real pixels
+function resize() {
+  const vv = window.visualViewport;       // the part of the page actually visible (minus browser bars)
+  const vw = vv ? vv.width : window.innerWidth, vh = vv ? vv.height : window.innerHeight;
+  const ox = vv ? vv.offsetLeft : 0, oy = vv ? vv.offsetTop : 0;
+  const s = Math.min(vw / W, vh / H);     // CSS pixels per game pixel
+  const cssW = Math.floor(W * s), cssH = Math.floor(H * s);
+  canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+  canvas.style.left = Math.floor(ox + (vw - cssW) / 2) + 'px';
+  canvas.style.top = Math.floor(oy + (vh - cssH) / 2) + 'px';
+  const k = Math.max(0.5, Math.min(s * (window.devicePixelRatio || 1), MAX_SCALE));
+  const pw = Math.round(W * k), ph = Math.round(H * k);
+  if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
+  ui.k = pw / W;
+  ui.big = ui.touch || cssH < 520;        // phones and small windows get big buttons and text
+  // portrait phone: suggest turning it sideways (the game still works upright)
+  document.getElementById('rotate').style.display = ui.touch && vh > vw ? 'block' : 'none';
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => { resize(); setTimeout(resize, 300); });   // iOS reports the new size late
+if (window.visualViewport) window.visualViewport.addEventListener('resize', resize);
+
+/* =====================================================================
+   10. MAIN LOOP
+   ===================================================================== */
+function resetGame() {
+  Object.assign(game, {
+    wave: 0, hull: HULL_MAX, hullMax: HULL_MAX, armor: 0, money: 0, kills: 0, apLevel: 0,
+    ammoType: 'light', ammo: { light: Infinity, heavy: START_AMMO.heavy, missile: START_AMMO.missile },
+    cannons: [], cannonLevel: 1, allies: [], bossBoom: null,
+    enemies: [], bullets: [], particles: [], texts: [], spawnQueue: [], banner: null, paused: false
+  });
+}
+
+function gameOver() {
+  game.mode = 'gameover';
+  game.overAt = game.time;
+  input.down = false;
+  explosion(SHIP_X + 500, WATERLINE - 80, 2.2);
+  explosion(SHIP_X + 300, WATERLINE - 60, 1.8);
+}
+
+// Advance the whole game by dt seconds.
+function update(dt) {
+  game.time += dt;
+  game.shake *= Math.pow(0.0015, dt);           // shake fades out quickly
+  game.hurtFlash = Math.max(0, (game.hurtFlash || 0) - dt);
+  game.recoil = Math.max(0, game.recoil - dt * 60);
+  if (game.banner && (game.banner.t -= dt) <= 0) game.banner = null;
+  if (game.shopFlash && (game.shopFlash.t -= dt) <= 0) game.shopFlash = null;
+
+  // aim the barrel at the crosshair (it can't point down into its own deck)
+  const pv = turretPivot();
+  let a = Math.atan2(input.y - pv.y, input.x - pv.x);
+  if (a > 0.45 && a <= Math.PI / 2) a = 0.45;
+  else if (a > Math.PI / 2) a = -Math.PI + 0.12;
+  else if (a < -Math.PI + 0.12) a = -Math.PI + 0.12;
+  game.aim = a;
+
+  const active = game.mode === 'play' || game.mode === 'cleared';
+  if (active) {
+    game.cooldown -= dt;
+    if (input.down && game.cooldown <= 0 && game.mode === 'play') fire();
+    if (game.mode === 'play') updateWave(dt);
+    if (game.mode === 'cleared' && (game.waveClearTimer -= dt) <= 0) openShop();
+  }
+  // a destroyed boss keeps blowing up for a while
+  if (game.bossBoom) {
+    const bb = game.bossBoom;
+    if (Math.random() < dt * 9) explosion(bb.x + rand(-bb.hw, bb.hw) * 0.8, bb.y + rand(-bb.hh, bb.hh), rand(0.8, 1.6));
+    if ((bb.t -= dt) <= 0) game.bossBoom = null;
+  }
+  updateCannons(dt);
+  updateAllies(dt);
+  for (const e of game.enemies) updateEnemy(e, dt);
+  for (const b of game.bullets) updateBullet(b, dt);
+  for (const p of game.particles) updateParticle(p, dt);
+  for (const t of game.texts) { t.y -= 30 * dt; t.life -= dt; }
+  game.enemies = game.enemies.filter(e => !e.dead);
+  game.bullets = game.bullets.filter(b => !b.dead);
+  game.particles = game.particles.filter(p => !p.dead);
+  game.texts = game.texts.filter(t => t.life > 0);
+  if (game.particles.length > 1500) game.particles.splice(0, game.particles.length - 1500);
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!game.paused) update(dt);
+  ctx.setTransform(ui.k, 0, 0, ui.k, 0, 0);   // draw in game pixels, whatever the real canvas size
+  render();
+  requestAnimationFrame(frame);
+}
+
+// Build all the art, then start.
+ASSETS.sky = makeSky();
+ASSETS.ocean = makeOcean();
+ASSETS.glints = makeGlints();
+ASSETS.ship = makeDestroyer();
+ASSETS.jet = makeJet('light');
+ASSETS.puffDark = makePuff(48, 46, 44);
+ASSETS.puffMid = makePuff(110, 108, 104);
+ASSETS.puffLight = makePuff(215, 215, 212);
+ASSETS.jetDark = makeJet('dark');
+ASSETS.jetNavy = makeJet('navy');
+ASSETS.heli = makeHeli();
+ASSETS.boat = makeBoat();
+ASSETS.missile = makeMissile();
+ASSETS.saucer = makeSaucer();
+ASSETS.warship = makeWarship();
+ASSETS.mothership = makeMothership();
+resize();
+requestAnimationFrame(frame);
+
+// Handy hooks for automated tests and for poking around in the browser console.
+window.SC = { game, input, update, startWave, spawnEnemy, resetGame, buyItem, openShop, closeShop, debugWave,
+  buildWave, fire, SHOP, AMMO, ENEMY, DEBUG, ui, resize, ammoRects, pauseRect };
+</script>
+</body>
+</html>
